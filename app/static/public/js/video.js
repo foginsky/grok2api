@@ -706,7 +706,7 @@
     const editBtn = item.querySelector('.video-edit');
     const setBBtn = item.querySelector('.video-set-b');
     const link = item.querySelector('.video-item-link');
-    const safeUrl = url || '';
+    const safeUrl = normalizePlayableVideoUrl(url || '');
     item.dataset.url = safeUrl;
     item.dataset.completed = safeUrl ? '1' : '0';
     if (link) {
@@ -1192,7 +1192,7 @@
         return { url: urlMatch[1] };
       }
     }
-    const urlMatches = buffer.match(/https?:\/\/[^\s<)]+/g);
+    const urlMatches = buffer.match(/https?:\/\/[^\s"'<>]*?\.mp4(?:\?[^\s"'<>]*)?(?:#[^\s"'<>]*)?/gi);
     if (urlMatches && urlMatches.length) {
       return { url: urlMatches[urlMatches.length - 1] };
     }
@@ -1204,7 +1204,7 @@
     if (!raw) return '';
     const info = extractVideoInfo(raw);
     if (info && info.url) return info.url;
-    const mp4 = raw.match(/https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/i);
+    const mp4 = raw.match(/https?:\/\/[^\s"'<>]*?\.mp4(?:\?[^\s"'<>]*)?(?:#[^\s"'<>]*)?/i);
     if (mp4 && mp4[0]) return mp4[0];
     const local = raw.match(/\/v1\/files\/video\/[^\s"'<>]+/i);
     if (local && local[0]) {
@@ -1236,6 +1236,14 @@
       } else if (videoEl.getAttribute('src')) {
         videoUrl = videoEl.getAttribute('src');
       }
+      videoUrl = normalizePlayableVideoUrl(videoUrl);
+      if (videoUrl) {
+        if (source) {
+          source.setAttribute('src', videoUrl);
+        } else {
+          videoEl.setAttribute('src', videoUrl);
+        }
+      }
     }
     updateItemLinks(container, videoUrl);
   }
@@ -1243,7 +1251,7 @@
   function renderVideoFromUrl(taskState, url) {
     const container = taskState && taskState.previewItem;
     if (!container) return;
-    const safeUrl = url || '';
+    const safeUrl = normalizePlayableVideoUrl(url || '');
     const body = container.querySelector('.video-item-body');
     if (!body) return;
     const actions = body.querySelector('.video-item-actions-overlay');
@@ -1437,7 +1445,9 @@
   function normalizePlayableVideoUrl(url) {
     let raw = String(url || '').trim();
     if (!raw) return '';
-    raw = raw.replace(/[)\]>.,;]+$/g, '');
+    raw = raw.replace(/[\u0000-\u001F\u007F]+/g, '');
+    raw = raw.replace(/[)\]>.,;\\]+$/g, '');
+    raw = raw.replace(/(\.mp4)[A-Za-z]+(?=($|[?#]))/i, '$1');
     raw = raw.replace(/(\.mp4)\/+$/i, '$1');
     return raw;
   }
