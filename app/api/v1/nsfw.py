@@ -172,6 +172,10 @@ def _clean_url(url: str) -> str:
     """清洗 URL 末尾脏字符，避免客户端误请求。"""
     value = (url or "").strip().strip('"').strip("'")
     value = value.rstrip("\\")
+    value = re.sub(r"[\x00-\x1f\x7f]+", "", value)
+    value = re.sub(r"[)\]>.,;\\]+$", "", value)
+    value = re.sub(r"(\.mp4)[A-Za-z]+(?=($|[?#]))", r"\1", value, flags=re.IGNORECASE)
+    value = re.sub(r"(\.mp4)/+$", r"\1", value, flags=re.IGNORECASE)
     return value
 
 

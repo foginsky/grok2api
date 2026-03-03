@@ -1646,7 +1646,7 @@
     const previewItem = taskState.previewItem || null;
     const hasVideoUrl = Boolean(previewItem && String(previewItem.dataset.url || '').trim());
     taskState.done = true;
-    if (!hasError && hasVideoUrl) {
+    if (hasVideoUrl) {
       taskState.progress = 100;
     } else {
       hasRunError = true;
@@ -1788,7 +1788,11 @@
       es.onerror = () => {
         if (!isRunning) return;
         setStatus('error', '部分任务连接异常');
-        markTaskFinished(taskId, true);
+        const state = taskStates.get(taskId);
+        const hasVideoUrl = Boolean(
+          state && state.previewItem && String(state.previewItem.dataset.url || '').trim()
+        );
+        markTaskFinished(taskId, !hasVideoUrl);
       };
     });
   }

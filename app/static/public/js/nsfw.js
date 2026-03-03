@@ -1264,6 +1264,16 @@
     return item;
   }
 
+  function normalizePlayableVideoUrl(url) {
+    let raw = String(url || '').trim();
+    if (!raw) return '';
+    raw = raw.replace(/[\u0000-\u001F\u007F]+/g, '');
+    raw = raw.replace(/[)\]>.,;\\]+$/g, '');
+    raw = raw.replace(/(\.mp4)[A-Za-z]+(?=($|[?#]))/i, '$1');
+    raw = raw.replace(/(\.mp4)\/+$/i, '$1');
+    return raw;
+  }
+
   function extractVideoInfo(buffer) {
     if (!buffer) return null;
     if (buffer.includes('<video')) {
@@ -1277,6 +1287,14 @@
       const match = mdMatches[mdMatches.length - 1].match(/\[video\]\(([^)]+)\)/);
       if (match) return { url: match[1] };
     }
+    const mp4Matches = buffer.match(/https?:\/\/[^\s"'<>]*?\.mp4(?:\?[^\s"'<>]*)?(?:#[^\s"'<>]*)?/gi);
+    if (mp4Matches && mp4Matches.length) {
+      return { url: mp4Matches[mp4Matches.length - 1] };
+    }
+    const localMatches = buffer.match(/\/v1\/files\/video\/[^\s"'<>]+/gi);
+    if (localMatches && localMatches.length) {
+      return { url: `${window.location.origin}${localMatches[localMatches.length - 1]}` };
+    }
     const urlMatches = buffer.match(/https?:\/\/[^\s<)]+/g);
     if (urlMatches && urlMatches.length) {
       return { url: urlMatches[urlMatches.length - 1] };
@@ -1288,10 +1306,11 @@
     if (!item) return;
     const open = item.querySelector('.video-open');
     const download = item.querySelector('.video-download');
-    item.dataset.videoUrl = url || '';
+    const safeUrl = normalizePlayableVideoUrl(url || '');
+    item.dataset.videoUrl = safeUrl;
     if (open) {
-      if (url) {
-        open.href = url;
+      if (safeUrl) {
+        open.href = safeUrl;
         open.classList.remove('hidden');
       } else {
         open.classList.add('hidden');
@@ -1299,8 +1318,8 @@
       }
     }
     if (download) {
-      download.disabled = !url;
-      download.dataset.url = url || '';
+      download.disabled = !safeUrl;
+      download.dataset.url = safeUrl;
     }
   }
 
@@ -1319,6 +1338,14 @@
       } else if (videoEl.getAttribute('src')) {
         videoUrl = videoEl.getAttribute('src');
       }
+      videoUrl = normalizePlayableVideoUrl(videoUrl);
+      if (videoUrl) {
+        if (source) {
+          source.setAttribute('src', videoUrl);
+        } else {
+          videoEl.setAttribute('src', videoUrl);
+        }
+      }
     }
     bindVideoLinks(item, videoUrl);
     setVideoItemStatus(item, '完成', 'done');
@@ -1327,7 +1354,7 @@
   function renderVideoUrl(item, url) {
     const body = item.querySelector('.video-body');
     if (!body) return;
-    const safe = url || '';
+    const safe = normalizePlayableVideoUrl(url || '');
     body.innerHTML = `<video controls preload="metadata"><source src="${safe}" type="video/mp4"></video>`;
     bindVideoLinks(item, safe);
     setVideoItemStatus(item, '完成', 'done');
