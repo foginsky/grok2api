@@ -257,8 +257,11 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    import uvicorn
-
+    print("推荐使用 Granian 命令行启动服务，例如：")
+    print("granian --interface asgi --host 0.0.0.0 --port 8000 main:app")
+    print("\n或者使用内置脚本：python scripts/run.py")
+    
+    import argparse
     parser = argparse.ArgumentParser(description="启动 Grok2API 服务")
     parser.add_argument(
         "--host",
