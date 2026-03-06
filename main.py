@@ -42,6 +42,7 @@ from app.api.v1.nsfw import router as nsfw_router  # noqa: E402
 from app.api.v1.files import router as files_router  # noqa: E402
 from app.api.v1.models import router as models_router  # noqa: E402
 from app.api.v1.response import router as responses_router  # noqa: E402
+from app.api.v1.video import router as videos_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
 from app.api.v1.admin_api import router as admin_router
 from app.api.v1.public_api import router as public_router
@@ -234,6 +235,9 @@ def create_app() -> FastAPI:
     # 兼容部分客户端直接请求 /responses（不带 /v1）
     app.include_router(
         responses_router, dependencies=[Depends(verify_api_key)]
+    )
+    app.include_router(
+        videos_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
     )
     app.include_router(
         video_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
