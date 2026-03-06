@@ -5,7 +5,7 @@ Batch assets service.
 import asyncio
 from typing import Dict, List, Optional
 
-from curl_cffi.requests import AsyncSession
+from app.services.reverse.utils.session import ResettableSession
 
 from app.core.config import get_config
 from app.core.logger import logger
@@ -18,11 +18,11 @@ class BaseAssetsService:
     """Base assets service."""
 
     def __init__(self):
-        self._session: Optional[AsyncSession] = None
+        self._session: Optional[ResettableSession] = None
 
-    async def _get_session(self) -> AsyncSession:
+    async def _get_session(self) -> ResettableSession:
         if self._session is None:
-            self._session = AsyncSession()
+            self._session = ResettableSession()
         return self._session
 
     async def close(self):

@@ -8,7 +8,7 @@ import re
 from typing import Any, AsyncGenerator, AsyncIterable, Optional
 
 import orjson
-from curl_cffi.requests import AsyncSession
+from app.services.reverse.utils.session import ResettableSession
 from curl_cffi.requests.errors import RequestsError
 
 from app.core.logger import logger
@@ -238,7 +238,7 @@ class VideoService:
             prompt_value = prompt if media_type == "MEDIA_POST_TYPE_VIDEO" else ""
             media_value = media_url or ""
 
-            async with AsyncSession() as session:
+            async with ResettableSession() as session:
                 async with _get_video_semaphore():
                     response = await MediaPostReverse.request(
                         session,
@@ -308,7 +308,7 @@ class VideoService:
 
         async def _stream():
             for attempt in range(1, moderated_max_retry + 1):
-                session = AsyncSession()
+                session = ResettableSession()
                 moderated_hit = False
                 try:
                     async with _get_video_semaphore():
@@ -402,7 +402,7 @@ class VideoService:
 
         async def _stream():
             for attempt in range(1, moderated_max_retry + 1):
-                session = AsyncSession()
+                session = ResettableSession()
                 moderated_hit = False
                 try:
                     async with _get_video_semaphore():
@@ -528,7 +528,7 @@ class VideoService:
 
         async def _stream():
             for attempt in range(1, moderated_max_retry + 1):
-                session = AsyncSession()
+                session = ResettableSession()
                 moderated_hit = False
                 try:
                     async with _get_video_semaphore():
@@ -663,7 +663,7 @@ class VideoService:
 
         async def _stream():
             for attempt in range(1, moderated_max_retry + 1):
-                session = AsyncSession()
+                session = ResettableSession()
                 moderated_hit = False
                 try:
                     async with _get_video_semaphore():
@@ -981,7 +981,7 @@ class VideoStreamProcessor(BaseProcessor):
             logger.warning("Video upscale skipped: unable to extract video id")
             return video_url
         try:
-            async with AsyncSession() as session:
+            async with ResettableSession() as session:
                 response = await VideoUpscaleReverse.request(
                     session, self.token, video_id
                 )
@@ -1176,7 +1176,7 @@ class VideoCollectProcessor(BaseProcessor):
             logger.warning("Video upscale skipped: unable to extract video id")
             return video_url
         try:
-            async with AsyncSession() as session:
+            async with ResettableSession() as session:
                 response = await VideoUpscaleReverse.request(
                     session, self.token, video_id
                 )
@@ -1200,7 +1200,7 @@ class VideoCollectProcessor(BaseProcessor):
         max_pages = 20
         marker = f"/{asset_id}/"
 
-        async with AsyncSession() as session:
+        async with ResettableSession() as session:
             for attempt in range(1, retries + 1):
                 params = {
                     "pageSize": page_size,

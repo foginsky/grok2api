@@ -8,7 +8,7 @@ import uuid
 from typing import Dict, List, Any, AsyncGenerator, AsyncIterable
 
 import orjson
-from curl_cffi.requests import AsyncSession
+from app.services.reverse.utils.session import ResettableSession
 from curl_cffi.requests.errors import RequestsError
 
 from app.core.logger import logger
@@ -194,7 +194,7 @@ class GrokChatService:
         browser = get_config("proxy.browser")
 
         async def _stream():
-            session = AsyncSession(impersonate=browser)
+            session = ResettableSession(impersonate=browser)
             try:
                 async with _get_chat_semaphore():
                     stream_response = await AppChatReverse.request(
