@@ -38,7 +38,7 @@ class VideoUpscaleReverse:
                 cookie_token=token,
                 content_type="application/json",
                 origin="https://grok.com",
-                referer="https://grok.com",
+                referer=f"https://grok.com/imagine/post/{video_id}"
             )
 
             # Build payload

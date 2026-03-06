@@ -954,7 +954,9 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     "completion_tokens": usage_completion,
                     "total_tokens": usage_total,
                 }
+                
                 result = merged
+
         except Exception as e:
             return _chat_error_as_success_response(request.model, _video_error_message(e))
     else:

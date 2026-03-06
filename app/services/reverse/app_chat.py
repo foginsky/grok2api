@@ -6,6 +6,7 @@ import orjson
 import inspect
 from typing import Any, Dict, List, Optional
 from curl_cffi.requests import AsyncSession
+from curl_cffi.requests.errors import RequestsError
 
 from app.core.logger import logger
 from app.core.config import get_config
@@ -15,6 +16,24 @@ from app.services.reverse.utils.headers import build_headers
 from app.services.reverse.utils.retry import retry_on_status
 
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
+
+
+def _is_transient_network_error(err: Exception) -> bool:
+    """判断是否为可快速重试的弱网/连接类错误。"""
+    s = str(err or "").lower()
+    keywords = (
+        "curl: (28)",  # operation timeout
+        "curl: (35)",  # tls connect error
+        "tls connect error",
+        "ssl connect error",
+        "failed to connect",
+        "couldn't connect",
+        "connection timed out",
+        "connection reset",
+        "network is unreachable",
+        "timed out",
+    )
+    return any(k in s for k in keywords)
 
 
 class AppChatReverse:
@@ -139,23 +158,37 @@ class AppChatReverse:
             )
 
             # Curl Config
-            timeout = max(
-                float(get_config("chat.timeout") or 0),
-                float(get_config("video.timeout") or 0),
-                float(get_config("image.timeout") or 0),
+            base_timeout = max(
+                float(get_config("chat.timeout") or 60.0),
+                float(get_config("video.timeout") or 60.0),
+                float(get_config("image.timeout") or 60.0),
             )
+            connect_timeout = float(
+                get_config("chat.connect_timeout")
+                or min(max(base_timeout, 1.0), 12.0)
+            )
+            # curl_cffi 支持 (connect_timeout, read_timeout)；流读取阶段仍由上层 idle timeout 控制。
+            timeout = (connect_timeout, base_timeout)
             browser = get_config("proxy.browser")
 
             async def _do_request():
-                response = await session.post(
-                    CHAT_API,
-                    headers=headers,
-                    data=orjson.dumps(payload),
-                    timeout=timeout,
-                    stream=True,
-                    proxies=proxies,
-                    impersonate=browser,
-                )
+                try:
+                    response = await session.post(
+                        CHAT_API,
+                        headers=headers,
+                        data=orjson.dumps(payload),
+                        timeout=timeout,
+                        stream=True,
+                        proxies=proxies,
+                        impersonate=browser,
+                    )
+                except RequestsError as e:
+                    if _is_transient_network_error(e):
+                        raise UpstreamException(
+                            message=f"AppChatReverse transient network error: {e}",
+                            details={"status": 599, "error": str(e)},
+                        ) from e
+                    raise
 
                 if response.status_code != 200:
 
@@ -170,6 +203,8 @@ class AppChatReverse:
                         f"AppChatReverse: Chat failed, {response.status_code}",
                         extra={"error_type": "UpstreamException"},
                     )
+                    logger.error(f"Response Headers: {response.headers}")
+                    logger.error(f"Response Body: {content}")
                     raise UpstreamException(
                         message=f"AppChatReverse: Chat failed, {response.status_code}",
                         details={"status": response.status_code, "body": content},
@@ -188,7 +223,11 @@ class AppChatReverse:
                     return status
                 return None
 
-            response = await retry_on_status(_do_request, extract_status=extract_status)
+            response = await retry_on_status(
+                _do_request,
+                extract_status=extract_status,
+                retry_status_codes=[502, 599],
+            )
 
             # Stream response
             async def stream_response():

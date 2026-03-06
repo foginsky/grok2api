@@ -19,21 +19,10 @@
   const editDurationText = document.getElementById('editDurationText');
   const editFrameIndex = document.getElementById('editFrameIndex');
   const editTimestampMs = document.getElementById('editTimestampMs');
-  const editFrameHash = document.getElementById('editFrameHash');
+  const editExtendPostId = document.getElementById('editExtendPostId');
   const editPromptInput = document.getElementById('editPromptInput');
   const spliceBtn = document.getElementById('spliceBtn');
-  const pickMergeVideoBtn = document.getElementById('pickMergeVideoBtn');
-  const directMergeBtn = document.getElementById('directMergeBtn');
-  const mergeVideoA = document.getElementById('mergeVideoA');
-  const mergeVideoB = document.getElementById('mergeVideoB');
-  const mergeVideoPreviewA = document.getElementById('mergeVideoPreviewA');
-  const mergeVideoPreviewB = document.getElementById('mergeVideoPreviewB');
-  const mergeTimelineA = document.getElementById('mergeTimelineA');
-  const mergeTimelineB = document.getElementById('mergeTimelineB');
-  const mergeTimeTextA = document.getElementById('mergeTimeTextA');
-  const mergeTimeTextB = document.getElementById('mergeTimeTextB');
-  const mergeDurationA = document.getElementById('mergeDurationA');
-  const mergeDurationB = document.getElementById('mergeDurationB');
+
   const promptInput = document.getElementById('promptInput');
   const imageUrlInput = document.getElementById('imageUrlInput');
   const parentPostInput = document.getElementById('parentPostInput');
@@ -83,18 +72,12 @@
   let activeSpliceRun = null;
   let lockedFrameIndex = -1;
   let lockedTimestampMs = 0;
-  let lastFrameHash = '';
-  let ffmpegInstance = null;
-  let ffmpegLoaded = false;
-  let ffmpegLoading = false;
-  const ffmpegLogBuffer = [];
+  let currentExtendPostId = '';      // 当前视频 postId（随链式延长更新）
+  let currentFileAttachmentId = '';  // 当前视频 postId（当前选中视频的 postId）
+  let originalFileAttachmentId = ''; // 原始图片 postId（首次设置后不随延长更新）
   const DEFAULT_REASONING_EFFORT = 'low';
   const EDIT_TIMELINE_MAX = 100000;
   const TAIL_FRAME_GUARD_MS = 80;
-  let mergeTargetVideoUrl = '';
-  let mergeTargetVideoName = '';
-  let mergeCutMsA = 0;
-  let mergeCutMsB = 0;
   let workVideoObjectUrl = '';
   let editTimelineTaskLocked = false;
   let workspacePreviewSizeLocked = false;
@@ -104,7 +87,7 @@
   function buildHistoryTitle(type, serial) {
     const n = Math.max(1, parseInt(String(serial || '1'), 10) || 1);
     if (type === 'splice') {
-      return `拼接视频${n}`;
+      return `延长视频${n}`;
     }
     return `生成视频${n}`;
   }
@@ -179,53 +162,24 @@
   function setEditMeta() {
     if (editFrameIndex) editFrameIndex.textContent = lockedFrameIndex >= 0 ? String(lockedFrameIndex) : '-';
     if (editTimestampMs) editTimestampMs.textContent = String(Math.max(0, Math.round(lockedTimestampMs)));
-    if (editFrameHash) editFrameHash.textContent = shortHash(lastFrameHash);
+    if (editExtendPostId) editExtendPostId.textContent = shortHash(currentExtendPostId);
   }
 
-  function pushFfmpegLog(line) {
-    const text = String(line || '').trim();
-    if (!text) return;
-    ffmpegLogBuffer.push(`[${new Date().toISOString()}] ${text}`);
-    if (ffmpegLogBuffer.length > 400) {
-      ffmpegLogBuffer.splice(0, ffmpegLogBuffer.length - 400);
-    }
+  // 从缓存视频文件名中提取 parentPostId
+  // 文件名格式示例: users-xxx-generated-{postId}-generated_video_hd.mp4
+  function extractPostIdFromFileName(name) {
+    const s = String(name || '').trim();
+    if (!s) return '';
+    // 尝试 generated-{uuid}- 模式
+    const m = s.match(/generated-([0-9a-fA-F-]{32,36})-/);
+    if (m) return m[1];
+    // 回退：匹配最后一个 UUID 格式
+    const allUuids = s.match(/[0-9a-fA-F-]{32,36}/g);
+    return allUuids && allUuids.length ? allUuids[allUuids.length - 1] : '';
   }
 
   function debugLog(...args) {
-    console.log('[video-splice-debug]', ...args);
-  }
-
-  function dumpFfmpegLogs(context, err, extra) {
-    const msg = String(err && err.message ? err.message : err);
-    console.groupCollapsed(`[ffmpeg-debug] ${context}: ${msg}`);
-    if (extra) {
-      console.log('extra:', extra);
-    }
-    const tail = ffmpegLogBuffer.slice(-120);
-    if (tail.length) {
-      console.log('recent logs:\n' + tail.join('\n'));
-    } else {
-      console.log('recent logs: <empty>');
-    }
-    console.groupEnd();
-  }
-
-  function attachFfmpegLogger(ff) {
-    if (!ff || ff.__debugLoggerAttached) return;
-    if (typeof ff.on === 'function') {
-      try {
-        ff.on('log', (event) => {
-          const type = event && event.type ? String(event.type) : 'log';
-          const message = event && event.message ? String(event.message) : '';
-          const line = `[${type}] ${message}`;
-          pushFfmpegLog(line);
-          console.log('[ffmpeg]', line);
-        });
-        ff.__debugLoggerAttached = true;
-      } catch (e) {
-        // ignore
-      }
-    }
+    // console.log('[video-extend-debug]', ...args);
   }
 
   function getSafeEditMaxTimestampMs() {
@@ -254,17 +208,15 @@
 
   function refreshAllDeleteZoneTracks() {
     updateDeleteZoneTrack(editTimeline);
-    updateDeleteZoneTrack(mergeTimelineA);
-    updateDeleteZoneTrack(mergeTimelineB);
   }
 
   function setSpliceButtonState(state) {
     if (!spliceBtn) return;
-    const iconSplice = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H6a2 2 0 0 0-2 2v5"/><path d="M13 20h5a2 2 0 0 0 2-2v-5"/><path d="M20 6l-8 8"/><path d="M4 18l8-8"/></svg>';
+    const iconExtend = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>';
     const iconStop = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14"/></svg>';
     if (state === 'running') {
       spliceBtn.disabled = false;
-      spliceBtn.innerHTML = `${iconStop}<span>中止拼接</span>`;
+      spliceBtn.innerHTML = `${iconStop}<span>中止延长</span>`;
       return;
     }
     if (state === 'stopping') {
@@ -273,7 +225,7 @@
       return;
     }
     spliceBtn.disabled = false;
-    spliceBtn.innerHTML = `${iconSplice}<span>拼接视频</span>`;
+    spliceBtn.innerHTML = `${iconExtend}<span>延长视频</span>`;
   }
 
   function syncTimelineAvailability() {
@@ -281,15 +233,6 @@
     if (editTimeline) {
       editTimeline.disabled = editTimelineTaskLocked || !hasWorkspaceVideo;
       editTimeline.classList.toggle('is-disabled', editTimeline.disabled);
-    }
-    if (mergeTimelineA) {
-      mergeTimelineA.disabled = !hasWorkspaceVideo;
-      mergeTimelineA.classList.toggle('is-disabled', mergeTimelineA.disabled);
-    }
-    const hasVideoB = Boolean(String(mergeTargetVideoUrl || '').trim());
-    if (mergeTimelineB) {
-      mergeTimelineB.disabled = !hasVideoB;
-      mergeTimelineB.classList.toggle('is-disabled', mergeTimelineB.disabled);
     }
   }
 
@@ -314,10 +257,7 @@
       if (enterEditBtn) enterEditBtn.disabled = true;
       closeEditPanel();
     }
-    if (mergeTargetVideoUrl && url && mergeTargetVideoUrl === url) {
-      mergeTargetVideoUrl = '';
-      mergeTargetVideoName = '';
-    }
+
     item.remove();
     const hasAny = videoStage.querySelector('.video-item');
     if (!hasAny) {
@@ -326,29 +266,7 @@
     }
     updateHistoryCount();
     refreshVideoSelectionUi();
-    updateMergeLabels();
-    updateManualActionsVisibility();
     syncTimelineAvailability();
-  }
-
-  function updateMergeLabels() {
-    if (mergeVideoA) {
-      mergeVideoA.textContent = selectedVideoUrl ? shortHash(selectedVideoUrl) : '-';
-    }
-    if (mergeVideoB) {
-      mergeVideoB.textContent = mergeTargetVideoName || (mergeTargetVideoUrl ? shortHash(mergeTargetVideoUrl) : '-');
-    }
-  }
-
-  function updateManualActionsVisibility() {
-    const hasWorkspaceVideo = Boolean(String(selectedVideoUrl || '').trim());
-    if (pickMergeVideoBtn) {
-      pickMergeVideoBtn.style.display = hasWorkspaceVideo ? '' : 'none';
-    }
-    if (directMergeBtn) {
-      directMergeBtn.style.display = hasWorkspaceVideo ? '' : 'none';
-      directMergeBtn.disabled = !hasWorkspaceVideo;
-    }
   }
 
   function getParentMemoryApi() {
@@ -358,21 +276,29 @@
   function extractParentPostId(text) {
     const raw = String(text || '').trim();
     if (!raw) return '';
+    const cleaned = raw.replace(/^['"\s]+|['"\s]+$/g, '');
+    if (!cleaned) return '';
     const api = getParentMemoryApi();
     if (api && typeof api.extractParentPostId === 'function') {
       try {
-        return String(api.extractParentPostId(raw) || '').trim();
+        const viaApi = String(api.extractParentPostId(cleaned) || '').trim();
+        if (viaApi) return viaApi;
       } catch (e) {
         // ignore
       }
     }
-    const direct = raw.match(/^[0-9a-fA-F-]{32,36}$/);
+    const queryId = cleaned.match(/[?&#](?:parent_post_id|parentPostId|post_id|postId)=([0-9a-fA-F-]{32,36})(?:[&#]|$)/i);
+    if (queryId) return queryId[1];
+
+    const direct = cleaned.match(/^[0-9a-fA-F-]{32,36}$/);
     if (direct) return direct[0];
-    const generated = raw.match(/\/generated\/([0-9a-fA-F-]{32,36})(?:\/|$)/);
+    const generated = cleaned.match(/\/generated\/([0-9a-fA-F-]{32,36})(?:[/?#]|$)/);
     if (generated) return generated[1];
-    const imaginePublic = raw.match(/\/imagine-public\/images\/([0-9a-fA-F-]{32,36})(?:\.jpg|\/|$)/);
+    const imaginePublic = cleaned.match(/\/imagine-public\/images\/([0-9a-fA-F-]{32,36})(?:\.[A-Za-z0-9]+|[/?#]|$)/);
     if (imaginePublic) return imaginePublic[1];
-    const all = raw.match(/([0-9a-fA-F-]{32,36})/g);
+    const imagesTail = cleaned.match(/\/images\/([0-9a-fA-F-]{32,36})(?:\.[A-Za-z0-9]+|[/?#]|$)/);
+    if (imagesTail) return imagesTail[1];
+    const all = cleaned.match(/([0-9a-fA-F-]{32,36})/g);
     return all && all.length ? all[all.length - 1] : '';
   }
 
@@ -431,8 +357,8 @@
     if (api && typeof api.resolveByText === 'function') {
       try {
         const hit = api.resolveByText(raw);
-        if (hit && hit.parentPostId) {
-          const parentPostId = String(hit.parentPostId || '').trim();
+        if (hit && (hit.parentPostId || hit.id)) {
+          const parentPostId = String(hit.parentPostId || hit.id || '').trim();
           const sourceUrl = pickSourceUrl(hit, parentPostId);
           const previewUrl = pickPreviewUrl(hit, parentPostId, sourceUrl);
           return {
@@ -451,26 +377,44 @@
     }
     const sourceUrl = pickSourceUrl({ sourceImageUrl: raw }, parentPostId, raw);
     const previewUrl = pickPreviewUrl({ imageUrl: raw, sourceImageUrl: sourceUrl }, parentPostId, sourceUrl);
-    return { url: previewUrl || sourceUrl, sourceUrl, parentPostId };
+    // 强制保底：只要有 parentPostId，url 字段就不能是空的字符串或原始 ID 文本
+    const finalUrl = (previewUrl && previewUrl !== parentPostId) ? previewUrl : `https://imagine-public.x.ai/imagine-public/images/${parentPostId}.jpg`;
+    return { url: finalUrl, sourceUrl: sourceUrl || finalUrl, parentPostId };
   }
 
   function applyParentPostReference(text, options = {}) {
     const silent = Boolean(options.silent);
     const resolved = resolveReferenceByText(text);
-    if (!resolved.parentPostId || !(resolved.url || resolved.sourceUrl)) {
+    const raw = String(text || '').trim();
+    const fallbackId = extractParentPostId(raw);
+    const fallbackUrl = fallbackId ? pickSourceUrl({ sourceImageUrl: raw }, fallbackId, raw) : '';
+    const finalParentId = resolved.parentPostId || fallbackId;
+    const finalSourceUrl = resolved.sourceUrl || fallbackUrl;
+    const finalPreviewUrl = resolved.url || finalSourceUrl;
+    // 判定条件优化：只有当 ID 为空 且 预览 URL 均为空时才视作失败
+    if (!finalParentId && !finalPreviewUrl) {
       if (!silent) {
         toast('未识别到有效 parentPostId', 'warning');
       }
       return false;
     }
     if (imageUrlInput) {
-      imageUrlInput.value = resolved.sourceUrl || resolved.url;
+      imageUrlInput.value = finalSourceUrl || finalPreviewUrl || '';
     }
     if (parentPostInput) {
-      parentPostInput.value = resolved.parentPostId;
+      parentPostInput.value = finalParentId;
     }
-    clearFileSelection();
-    setReferencePreview(resolved.url || resolved.sourceUrl, resolved.parentPostId);
+
+    // 仅清空本地图片变量，不调用全局 clearFileSelection 避免清空自身输入框
+    fileDataUrl = '';
+    if (imageFileInput) {
+      imageFileInput.value = '';
+    }
+    if (imageFileName) {
+      imageFileName.textContent = '未选择文件';
+    }
+
+    setReferencePreview(finalPreviewUrl, finalParentId);
     if (!silent) {
       toast('已使用 parentPostId 填充参考图', 'success');
     }
@@ -608,10 +552,8 @@
         editVideo.removeAttribute('src');
         editVideo.load();
       }
-      mergeTargetVideoUrl = '';
-      mergeTargetVideoName = '';
-      mergeCutMsA = 0;
-      mergeCutMsB = 0;
+      currentExtendPostId = '';
+      currentFileAttachmentId = '';
       if (workVideoObjectUrl) {
         try { URL.revokeObjectURL(workVideoObjectUrl); } catch (e) { /* ignore */ }
         workVideoObjectUrl = '';
@@ -621,9 +563,7 @@
       }
       if (enterEditBtn) enterEditBtn.disabled = true;
       closeEditPanel();
-      updateMergeLabels();
       updateHistoryCount();
-      updateManualActionsVisibility();
     }
     if (durationValue) {
       durationValue.textContent = '耗时 -';
@@ -667,16 +607,9 @@
     editBtn.textContent = '编辑';
     editBtn.disabled = true;
 
-    const setBBtn = document.createElement('button');
-    setBBtn.className = 'geist-button-outline text-xs px-3 video-set-b';
-    setBBtn.type = 'button';
-    setBBtn.textContent = '设为视频2';
-    setBBtn.disabled = true;
-
     actions.appendChild(openBtn);
     actions.appendChild(downloadBtn);
     actions.appendChild(editBtn);
-    actions.appendChild(setBBtn);
     header.appendChild(title);
 
     const body = document.createElement('div');
@@ -704,7 +637,6 @@
     const openBtn = item.querySelector('.video-open');
     const downloadBtn = item.querySelector('.video-download');
     const editBtn = item.querySelector('.video-edit');
-    const setBBtn = item.querySelector('.video-set-b');
     const link = item.querySelector('.video-item-link');
     const safeUrl = normalizePlayableVideoUrl(url || '');
     item.dataset.url = safeUrl;
@@ -728,9 +660,6 @@
     }
     if (editBtn) {
       editBtn.disabled = !safeUrl;
-    }
-    if (setBBtn) {
-      setBBtn.disabled = !safeUrl;
     }
     if (safeUrl) {
       item.classList.remove('is-pending');
@@ -771,13 +700,13 @@
     if (imageFileName) {
       imageFileName.textContent = '未选择文件';
     }
-    const rawUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
-    if (rawUrl) {
-      const resolved = resolveReferenceByText(rawUrl);
-      setReferencePreview(resolved.url || resolved.sourceUrl || rawUrl, resolved.parentPostId || '');
-    } else {
-      clearReferencePreview();
+    if (imageUrlInput) {
+      imageUrlInput.value = '';
     }
+    if (parentPostInput) {
+      parentPostInput.value = '';
+    }
+    clearReferencePreview();
   }
 
   async function readFileAsDataUrl(file) {
@@ -863,224 +792,6 @@
     return authHeader;
   }
 
-  function getFfmpegApis() {
-    const ffmpegApi = window.FFmpegWASM || {};
-    const utilApi = window.FFmpegUtil || {};
-    const FFmpegCtor = ffmpegApi.FFmpeg || ffmpegApi.createFFmpeg || null;
-    const fetchFile = utilApi.fetchFile || null;
-    return { FFmpegCtor, fetchFile };
-  }
-
-  async function fetchWithTimeout(url, timeoutMs) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const resp = await fetch(url, { signal: controller.signal, cache: 'force-cache' });
-      if (!resp.ok) {
-        throw new Error(`fetch_${resp.status}`);
-      }
-      return await resp.blob();
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  async function toBlobUrlFromCandidates(urls, mime, timeoutMs = 12000) {
-    let lastErr = null;
-    for (const url of urls) {
-      try {
-        const blob = await fetchWithTimeout(url, timeoutMs);
-        return URL.createObjectURL(new Blob([blob], { type: mime }));
-      } catch (e) {
-        lastErr = e;
-      }
-    }
-    throw lastErr || new Error('blob_url_candidates_failed');
-  }
-
-  async function toOptionalBlobUrl(urls, mime, timeoutMs = 12000) {
-    try {
-      return await toBlobUrlFromCandidates(urls, mime, timeoutMs);
-    } catch (e) {
-      return '';
-    }
-  }
-
-  async function ensureFfmpeg() {
-    if (ffmpegLoaded && ffmpegInstance) return ffmpegInstance;
-    if (ffmpegLoading) {
-      for (let i = 0; i < 80; i++) {
-        await new Promise((r) => setTimeout(r, 100));
-        if (ffmpegLoaded && ffmpegInstance) return ffmpegInstance;
-      }
-      throw new Error('ffmpeg_load_timeout');
-    }
-    const { FFmpegCtor } = getFfmpegApis();
-    if (!FFmpegCtor) {
-      throw new Error('ffmpeg_runtime_missing');
-    }
-    ffmpegLoading = true;
-    debugLog('ensureFfmpeg:start');
-    try {
-      const candidates = {
-        coreURL: [
-          '/v1/public/video/vendor/ffmpeg-core.js',
-        ],
-        wasmURL: [
-          '/v1/public/video/vendor/ffmpeg-core.wasm',
-        ],
-        workerURL: [
-          // worker 文件在部分 ffmpeg core 版本中不存在，默认不请求以避免无效报错
-        ],
-      };
-      // 统一转为同源 blob URL，避免跨域 Worker 限制，同时实现多源超时切换。
-      const coreURL = await toBlobUrlFromCandidates(candidates.coreURL, 'text/javascript');
-      const wasmURL = await toBlobUrlFromCandidates(candidates.wasmURL, 'application/wasm');
-      const workerURL = await toOptionalBlobUrl(candidates.workerURL, 'text/javascript');
-      if (typeof FFmpegCtor === 'function') {
-        try {
-          // 兼容 @ffmpeg/ffmpeg 0.12+ 的 class FFmpeg
-          ffmpegInstance = new FFmpegCtor();
-        } catch (e) {
-          // 回退兼容 createFFmpeg 工厂模式
-          ffmpegInstance = FFmpegCtor({ log: false });
-        }
-        if (ffmpegInstance && typeof ffmpegInstance.load === 'function') {
-          const loadConfig = { coreURL, wasmURL };
-          if (workerURL) {
-            loadConfig.workerURL = workerURL;
-          }
-          await ffmpegInstance.load(loadConfig);
-          debugLog('ensureFfmpeg:loaded');
-        }
-      }
-      if (!ffmpegInstance) {
-        throw new Error('ffmpeg_instance_init_failed');
-      }
-      attachFfmpegLogger(ffmpegInstance);
-      ffmpegLoaded = true;
-      debugLog('ensureFfmpeg:ready');
-      return ffmpegInstance;
-    } finally {
-      ffmpegLoading = false;
-    }
-  }
-
-  async function resetFfmpegInstance() {
-    if (!ffmpegInstance) return;
-    debugLog('resetFfmpegInstance:start');
-    try {
-      if (typeof ffmpegInstance.terminate === 'function') {
-        await ffmpegInstance.terminate();
-      }
-    } catch (e) {
-      // ignore
-    }
-    ffmpegInstance = null;
-    ffmpegLoaded = false;
-    ffmpegLoading = false;
-    debugLog('resetFfmpegInstance:done');
-  }
-
-  function ffTaskPrefix(tag) {
-    return `${tag}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  }
-
-  function isFsError(e) {
-    const msg = String(e && e.message ? e.message : e);
-    return msg.includes('FS error') || msg.includes('ErrnoError');
-  }
-
-  function toStableUint8(input) {
-    if (input instanceof Uint8Array) {
-      return new Uint8Array(input);
-    }
-    if (input instanceof ArrayBuffer) {
-      return new Uint8Array(input.slice(0));
-    }
-    if (ArrayBuffer.isView(input)) {
-      const view = input;
-      const start = view.byteOffset || 0;
-      const end = start + (view.byteLength || 0);
-      return new Uint8Array(view.buffer.slice(start, end));
-    }
-    throw new Error('binary_input_invalid');
-  }
-
-  function toStableArrayBuffer(input) {
-    return toStableUint8(input).buffer;
-  }
-
-  async function sha256Hex(bytes) {
-    const stableBytes = toStableUint8(bytes);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', stableBytes);
-    return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, '0')).join('');
-  }
-
-  async function fetchArrayBuffer(url) {
-    const resp = await fetch(url, { mode: 'cors' });
-    if (!resp.ok) {
-      throw new Error(`fetch_failed_${resp.status}`);
-    }
-    const raw = await resp.arrayBuffer();
-    return raw.slice(0);
-  }
-
-  async function ffmpegWriteFile(ff, name, data) {
-    const stable = toStableUint8(data);
-    if (typeof ff.writeFile === 'function') {
-      return await ff.writeFile(name, stable);
-    }
-    if (ff.FS) {
-      ff.FS('writeFile', name, stable);
-      return;
-    }
-    throw new Error('ffmpeg_writefile_unsupported');
-  }
-
-  async function ffmpegReadFile(ff, name) {
-    if (typeof ff.readFile === 'function') {
-      const out = await ff.readFile(name);
-      return toStableUint8(out);
-    }
-    if (ff.FS) {
-      const out = ff.FS('readFile', name);
-      return toStableUint8(out);
-    }
-    throw new Error('ffmpeg_readfile_unsupported');
-  }
-
-  async function ffmpegDeleteFileSafe(ff, name) {
-    try {
-      if (typeof ff.deleteFile === 'function') {
-        await ff.deleteFile(name);
-        return;
-      }
-      if (ff.FS) {
-        ff.FS('unlink', name);
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  async function ffmpegExec(ff, args) {
-    debugLog('ffmpegExec:run', args.join(' '));
-    try {
-      if (typeof ff.exec === 'function') {
-        return await ff.exec(args);
-      }
-      if (typeof ff.run === 'function') {
-        return await ff.run(...args);
-      }
-      throw new Error('ffmpeg_exec_unsupported');
-    } catch (e) {
-      dumpFfmpegLogs('ffmpegExec_failed', e, { args });
-      console.error('[video-splice-debug] ffmpegExec:error', args, e);
-      throw e;
-    }
-  }
-
   function buildSseUrl(taskId, rawPublicKey) {
     const httpProtocol = window.location.protocol === 'https:' ? 'https' : 'http';
     const base = `${httpProtocol}://${window.location.host}/v1/public/video/sse`;
@@ -1099,6 +810,7 @@
     return Math.max(1, Math.min(4, raw));
   }
 
+
   async function createVideoTasks(authHeader) {
     const prompt = promptInput ? promptInput.value.trim() : '';
     const rawUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
@@ -1111,16 +823,17 @@
     if (!fileDataUrl) {
       resolvedRef = resolveReferenceByText(rawParent || rawUrl);
     }
-    const parentPostId = fileDataUrl ? '' : String(resolvedRef.parentPostId || '').trim();
-    const imageUrl = fileDataUrl ? fileDataUrl : (parentPostId ? '' : resolvedRef.url);
-    if (!fileDataUrl && resolvedRef.parentPostId) {
-      if (imageUrlInput) {
+    const parentPostId = fileDataUrl ? '' : (rawParent || resolvedRef.parentPostId || '').trim();
+    const imageUrl = fileDataUrl ? fileDataUrl : (parentPostId ? (rawUrl || resolvedRef.sourceUrl || '') : (rawUrl || resolvedRef.url || ''));
+
+    if (!fileDataUrl && (resolvedRef.parentPostId || parentPostId)) {
+      if (imageUrlInput && !imageUrlInput.value.trim() && (resolvedRef.sourceUrl || resolvedRef.url)) {
         imageUrlInput.value = resolvedRef.sourceUrl || resolvedRef.url;
       }
-      if (parentPostInput) {
-        parentPostInput.value = resolvedRef.parentPostId;
+      if (parentPostInput && !parentPostInput.value.trim() && (resolvedRef.parentPostId || parentPostId)) {
+        parentPostInput.value = resolvedRef.parentPostId || parentPostId;
       }
-      setReferencePreview(resolvedRef.url || resolvedRef.sourceUrl, resolvedRef.parentPostId);
+      setReferencePreview(resolvedRef.url || resolvedRef.sourceUrl || imageUrl, resolvedRef.parentPostId || parentPostId);
     }
     const res = await fetch('/v1/public/video/start', {
       method: 'POST',
@@ -1130,9 +843,9 @@
       },
       body: JSON.stringify({
         prompt,
-        image_url: imageUrl || null,
+        image_url: parentPostId ? null : (imageUrl || null),
         parent_post_id: parentPostId || null,
-        source_image_url: parentPostId ? (resolvedRef.sourceUrl || null) : null,
+        source_image_url: parentPostId ? (resolvedRef.sourceUrl || imageUrl || null) : null,
         reasoning_effort: DEFAULT_REASONING_EFFORT,
         aspect_ratio: ratioSelect ? ratioSelect.value : '3:2',
         video_length: lengthSelect ? parseInt(lengthSelect.value, 10) : 6,
@@ -1290,6 +1003,18 @@
     if (editHint) {
       editHint.classList.toggle('hidden', Boolean(safeUrl));
     }
+    // 从 URL 中提取 postId （支持历史面板点击编辑）
+    const postId = extractPostIdFromFileName(safeUrl);
+    if (postId) {
+      currentExtendPostId = postId;
+      currentFileAttachmentId = postId;
+      // 首次设置 originalFileAttachmentId（后续延长不覆盖）
+      if (!originalFileAttachmentId) {
+        originalFileAttachmentId = postId;
+        debugLog('bindEditVideoSource: set originalFileAttachmentId =', postId);
+      }
+      debugLog('bindEditVideoSource: extracted postId =', postId);
+    }
     if (!editVideo) return;
     enforceInlinePlayback(editVideo);
     editVideo.src = safeUrl;
@@ -1297,12 +1022,8 @@
     lockWorkspacePreviewSize();
     lockedFrameIndex = -1;
     lockedTimestampMs = 0;
-    lastFrameHash = '';
     setEditMeta();
-    updateMergeLabels();
-    updateManualActionsVisibility();
     syncTimelineAvailability();
-    bindMergeVideoA(safeUrl);
   }
 
   function scrollToWorkspaceTop() {
@@ -1310,29 +1031,6 @@
     editPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  function bindMergeVideoA(url) {
-    const safeUrl = String(url || '').trim();
-    if (!mergeVideoPreviewA) return;
-    enforceInlinePlayback(mergeVideoPreviewA);
-    mergeVideoPreviewA.src = safeUrl;
-    mergeVideoPreviewA.load();
-    mergeCutMsA = 0;
-    if (mergeTimeTextA) mergeTimeTextA.textContent = formatMs(0);
-    if (mergeTimelineA) mergeTimelineA.value = '0';
-    syncTimelineAvailability();
-  }
-
-  function bindMergeVideoB(url) {
-    const safeUrl = String(url || '').trim();
-    if (!mergeVideoPreviewB) return;
-    enforceInlinePlayback(mergeVideoPreviewB);
-    mergeVideoPreviewB.src = safeUrl;
-    mergeVideoPreviewB.load();
-    mergeCutMsB = 0;
-    if (mergeTimeTextB) mergeTimeTextB.textContent = formatMs(0);
-    if (mergeTimelineB) mergeTimelineB.value = '0';
-    syncTimelineAvailability();
-  }
 
   function openEditPanel() {
     const item = getSelectedVideoItem();
@@ -1503,9 +1201,7 @@
         }
       }, { once: true });
     });
-    const activeUrlRaw = cacheModalPickMode === 'merge_target'
-      ? mergeTargetVideoUrl
-      : selectedVideoUrl;
+    const activeUrlRaw = selectedVideoUrl;
     const activeUrl = normalizeVideoUrlForCompare(activeUrlRaw);
     if (!activeUrl) return;
     const rows = cacheVideoList.querySelectorAll('.cache-video-item');
@@ -1524,22 +1220,23 @@
   function useCachedVideo(url, name) {
     const safeUrl = String(url || '').trim();
     if (!safeUrl) return;
-    if (cacheModalPickMode === 'merge_target') {
-      mergeTargetVideoUrl = safeUrl;
-      mergeTargetVideoName = String(name || '').trim();
-      updateMergeLabels();
-      bindMergeVideoB(safeUrl);
-      closeCacheVideoModal();
-      toast('已选择视频2', 'success');
-      return;
-    }
     selectedVideoItemId = `cache-${Date.now()}`;
     selectedVideoUrl = safeUrl;
+    // 从文件名中自动提取 parentPostId 用于视频延长
+    const extractedPostId = extractPostIdFromFileName(String(name || ''));
+    if (extractedPostId) {
+      currentExtendPostId = extractedPostId;
+      currentFileAttachmentId = extractedPostId;
+      // 从缓存重新选择视频时重置 originalFileAttachmentId（开启新的延长链）
+      originalFileAttachmentId = extractedPostId;
+      debugLog('useCachedVideo: extracted postId =', extractedPostId);
+    }
     if (imageUrlInput) imageUrlInput.value = safeUrl;
     if (imageFileName && name) imageFileName.textContent = name;
     if (enterEditBtn) enterEditBtn.disabled = false;
     closeCacheVideoModal();
     openEditPanel();
+    setEditMeta();
   }
 
   function updateTimelineByVideoTime() {
@@ -1556,7 +1253,15 @@
 
   function lockFrameByCurrentTime() {
     if (!editVideo) return;
-    const currentTime = Number(editVideo.currentTime || 0);
+    let currentTime = Number(editVideo.currentTime || 0);
+    const duration = Number(editVideo.duration || 0);
+    // 强制限制提取的秒数上限为 20s
+    if (currentTime > 20) {
+      currentTime = 20;
+      if (editTimeText) {
+        editTimeText.textContent = formatMs(clampEditTimestampMs(Math.round(currentTime * 1000))) + " (已达官方20s延长上限)";
+      }
+    }
     lockedTimestampMs = clampEditTimestampMs(Math.round(currentTime * 1000));
     const approxFps = 30;
     lockedFrameIndex = Math.max(0, Math.round(currentTime * approxFps));
@@ -1671,11 +1376,6 @@
   }
 
   async function startConnection() {
-    const prompt = promptInput ? promptInput.value.trim() : '';
-    if (!prompt) {
-      toast('请输入提示词', 'error');
-      return;
-    }
 
     if (isRunning) {
       toast('已在生成中', 'warning');
@@ -1948,444 +1648,20 @@
     });
   }
 
-  async function requestCancelSplice() {
-    const run = activeSpliceRun;
-    if (!run || run.done) return;
-    if (run.cancelling) return;
-    run.cancelled = true;
-    run.cancelling = true;
-    setStatus('connecting', '正在中止拼接...');
-    setSpliceButtonState('stopping');
-    if (run.sources && run.sources.size) {
-      run.sources.forEach((es) => {
-        try { es.close(); } catch (e) { /* ignore */ }
-      });
-      run.sources.clear();
-    }
-    if (run.pendingRejects && run.pendingRejects.size) {
-      run.pendingRejects.forEach((rejectFn) => {
-        try { rejectFn(new Error('edit_cancelled')); } catch (e) { /* ignore */ }
-      });
-      run.pendingRejects.clear();
-    }
-    if (run.taskIds && run.taskIds.length) {
-      try {
-        await stopVideoTask(run.taskIds, run.authHeader);
-      } catch (e) {
-        // ignore
-      }
-    }
-    if (run.placeholders) {
-      run.placeholders.forEach((item) => {
-        if (!item) return;
-        const completed = String(item.dataset.completed || '0') === '1';
-        if (!completed) {
-          removePreviewItem(item);
-        }
-      });
-    }
-    run.cancelling = false;
-    toast('已中止拼接任务', 'warning');
-  }
 
-  async function extractFrameAtCurrentPoint(videoUrl) {
-    debugLog('extractFrame:start', { videoUrl, lockedTimestampMs, lockedFrameIndex });
-    const srcBuffer = await fetchArrayBuffer(videoUrl);
-
-    const runOnce = async () => {
-      await resetFfmpegInstance();
-      const ff = await ensureFfmpeg();
-      const prefix = ffTaskPrefix('edit');
-      const inputName = `${prefix}_input.mp4`;
-      const frameName = `${prefix}_frame.png`;
-      try {
-        await ffmpegWriteFile(ff, inputName, srcBuffer);
-        const baseMs = clampEditTimestampMs(lockedTimestampMs);
-        const candidates = [baseMs, baseMs - 34, baseMs - 68, baseMs - 102]
-          .map((v) => Math.max(0, Math.round(v)));
-        let frameBytes = null;
-        for (const ms of candidates) {
-          const seconds = (ms / 1000).toFixed(3);
-          try {
-            await ffmpegExec(ff, ['-y', '-ss', seconds, '-i', inputName, '-frames:v', '1', '-update', '1', frameName]);
-            frameBytes = await ffmpegReadFile(ff, frameName);
-            lockedTimestampMs = ms;
-            break;
-          } catch (e) {
-            await ffmpegDeleteFileSafe(ff, frameName);
-          }
-        }
-        if (!frameBytes) {
-          debugLog('extractFrame:failedCandidates', { baseMs, candidates });
-          throw new Error('extract_frame_failed_near_tail');
-        }
-        const frameHash = await sha256Hex(frameBytes);
-        const sourceHash = await sha256Hex(srcBuffer);
-        let binary = '';
-        const chunk = 0x8000;
-        for (let i = 0; i < frameBytes.length; i += chunk) {
-          binary += String.fromCharCode(...frameBytes.subarray(i, i + chunk));
-        }
-        const dataUrl = `data:image/png;base64,${btoa(binary)}`;
-        lastFrameHash = frameHash;
-        setEditMeta();
-        return {
-          dataUrl,
-          frameHash,
-          sourceHash,
-          sourceBuffer: toStableArrayBuffer(srcBuffer),
-        };
-      } finally {
-        await ffmpegDeleteFileSafe(ff, inputName);
-        await ffmpegDeleteFileSafe(ff, frameName);
-      }
-    };
-
-    try {
-      return await runOnce();
-    } catch (e) {
-      if (isFsError(e)) {
-        return await runOnce();
-      }
-      throw e;
-    }
-  }
-
-  async function concatVideosLocal(sourceBuffer, generatedVideoUrl) {
-    debugLog('concatLocal:start', { generatedVideoUrl, lockedTimestampMs });
-    const safeGeneratedUrl = normalizePlayableVideoUrl(generatedVideoUrl);
-    const generatedBuffer = await fetchArrayBuffer(safeGeneratedUrl);
-    const sourceStable = toStableArrayBuffer(sourceBuffer);
-
-    const runOnce = async () => {
-      const ff = await ensureFfmpeg();
-      const prefix = ffTaskPrefix('concat');
-      const segASource = `${prefix}_a_source.mp4`;
-      const segBSource = `${prefix}_b_source.mp4`;
-      const segAVideo = `${prefix}_a_video.mp4`;
-      const segBVideo = `${prefix}_b_video.mp4`;
-      const segAAudio = `${prefix}_a_audio.m4a`;
-      const segBAudio = `${prefix}_b_audio.m4a`;
-      const listVideo = `${prefix}_video_list.txt`;
-      const listAudio = `${prefix}_audio_list.txt`;
-      const mergedVideoFile = `${prefix}_merged_video.mp4`;
-      const mergedAudioFile = `${prefix}_merged_audio.m4a`;
-      const mergedFile = `${prefix}_merged.mp4`;
-      try {
-        const trimSeconds = (Math.max(0, lockedTimestampMs) / 1000).toFixed(3);
-        if (Number(trimSeconds) <= 0) {
-          return new Blob([toStableUint8(generatedBuffer)], { type: 'video/mp4' });
-        }
-        await ffmpegWriteFile(ff, segASource, sourceStable);
-        await ffmpegWriteFile(ff, segBSource, generatedBuffer);
-
-        try {
-          await ffmpegExec(
-            ff,
-            [
-              '-y',
-              '-i', segASource,
-              '-t', trimSeconds,
-              '-map', '0:v:0',
-              '-c', 'copy',
-              segAVideo
-            ]
-          );
-          await ffmpegExec(
-            ff,
-            [
-              '-y',
-              '-i', segBSource,
-              '-map', '0:v:0',
-              '-c', 'copy',
-              segBVideo
-            ]
-          );
-          await ffmpegWriteFile(
-            ff,
-            listVideo,
-            new TextEncoder().encode(`file '${segAVideo}'\nfile '${segBVideo}'\n`)
-          );
-          await ffmpegExec(
-            ff,
-            [
-              '-y',
-              '-f', 'concat',
-              '-safe', '0',
-              '-i', listVideo,
-              '-c', 'copy',
-              mergedVideoFile
-            ]
-          );
-        } catch (videoCopyErr) {
-          await ffmpegExec(
-            ff,
-            [
-              '-y',
-              '-i', segASource,
-              '-i', segBSource,
-              '-filter_complex',
-              `[0:v]trim=end=${trimSeconds},setpts=PTS-STARTPTS[v0];[1:v]setpts=PTS-STARTPTS[v1];[v0][v1]concat=n=2:v=1:a=0[v]`,
-              '-map', '[v]',
-              '-c:v', 'libx264',
-              '-preset', 'ultrafast',
-              '-pix_fmt', 'yuv420p',
-              '-r', '30',
-              '-an',
-              mergedVideoFile
-            ]
-          );
-        }
-
-        let mergedWithAudio = false;
-        try {
-          await ffmpegExec(
-            ff,
-            [
-              '-y',
-              '-i', segASource,
-              '-t', trimSeconds,
-              '-map', '0:a:0',
-              '-c', 'copy',
-              segAAudio
-            ]
-          );
-          await ffmpegExec(
-            ff,
-            [
-              '-y',
-              '-i', segBSource,
-              '-map', '0:a:0',
-              '-c', 'copy',
-              segBAudio
-            ]
-          );
-          await ffmpegWriteFile(
-            ff,
-            listAudio,
-            new TextEncoder().encode(`file '${segAAudio}'\nfile '${segBAudio}'\n`)
-          );
-          await ffmpegExec(
-            ff,
-            [
-              '-y',
-              '-f', 'concat',
-              '-safe', '0',
-              '-i', listAudio,
-              '-c', 'copy',
-              mergedAudioFile
-            ]
-          );
-          await ffmpegExec(
-            ff,
-            [
-              '-y',
-              '-i', mergedVideoFile,
-              '-i', mergedAudioFile,
-              '-map', '0:v:0',
-              '-map', '1:a:0',
-              '-c', 'copy',
-              '-shortest',
-              mergedFile
-            ]
-          );
-          mergedWithAudio = true;
-        } catch (audioMuxErr) {
-          mergedWithAudio = false;
-        }
-        if (!mergedWithAudio) {
-          await ffmpegExec(
-            ff,
-            [
-              '-y',
-              '-i', mergedVideoFile,
-              '-c', 'copy',
-              mergedFile
-            ]
-          );
-        }
-        const merged = await ffmpegReadFile(ff, mergedFile);
-        return new Blob([toStableUint8(merged)], { type: 'video/mp4' });
-      } finally {
-        await ffmpegDeleteFileSafe(ff, segASource);
-        await ffmpegDeleteFileSafe(ff, segBSource);
-        await ffmpegDeleteFileSafe(ff, segAVideo);
-        await ffmpegDeleteFileSafe(ff, segBVideo);
-        await ffmpegDeleteFileSafe(ff, segAAudio);
-        await ffmpegDeleteFileSafe(ff, segBAudio);
-        await ffmpegDeleteFileSafe(ff, listVideo);
-        await ffmpegDeleteFileSafe(ff, listAudio);
-        await ffmpegDeleteFileSafe(ff, mergedVideoFile);
-        await ffmpegDeleteFileSafe(ff, mergedAudioFile);
-        await ffmpegDeleteFileSafe(ff, mergedFile);
-      }
-    };
-
-    let lastErr = null;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        debugLog('concatLocal:attempt', attempt);
-        await resetFfmpegInstance();
-        return await runOnce();
-      } catch (e) {
-        lastErr = e;
-        console.error('[video-splice-debug] concatLocal:attemptError', attempt, e);
-        const msg = String(e && e.message ? e.message : e);
-        if (msg === 'edit_cancelled') {
-          throw e;
-        }
-      } finally {
-        await resetFfmpegInstance();
-      }
-    }
-    throw lastErr || new Error('concat_failed');
-  }
-
-  async function concatTwoVideosManual(videoAUrl, videoBUrl, cutAMs, cutBMs) {
-    const bufferA = await fetchArrayBuffer(videoAUrl);
-    const bufferB = await fetchArrayBuffer(videoBUrl);
-    const cutA = (Math.max(0, Number(cutAMs) || 0) / 1000).toFixed(3);
-    const cutB = (Math.max(0, Number(cutBMs) || 0) / 1000).toFixed(3);
-
-    const runOnce = async () => {
-      await resetFfmpegInstance();
-      const ff = await ensureFfmpeg();
-      const prefix = ffTaskPrefix('manual_merge');
-      const srcA = `${prefix}_a_source.mp4`;
-      const srcB = `${prefix}_b_source.mp4`;
-      const segA = `${prefix}_a.mp4`;
-      const segB = `${prefix}_b.mp4`;
-      const segANorm = `${prefix}_a_norm.mp4`;
-      const segBNorm = `${prefix}_b_norm.mp4`;
-      const list = `${prefix}_list.txt`;
-      const out = `${prefix}_out.mp4`;
-      const files = [srcA, srcB, segA, segB, segANorm, segBNorm, list, out];
-      try {
-        await ffmpegWriteFile(ff, srcA, bufferA);
-        await ffmpegWriteFile(ff, srcB, bufferB);
-
-        let hasA = false;
-        let hasB = false;
-        if (Number(cutA) > 0) {
-          await ffmpegExec(ff, ['-y', '-i', srcA, '-t', cutA, '-c', 'copy', segA]);
-          hasA = true;
-        }
-        await ffmpegExec(ff, ['-y', '-ss', cutB, '-i', srcB, '-c', 'copy', segB]);
-        hasB = true;
-
-        const parts = [];
-        if (hasA) parts.push(segA);
-        if (hasB) parts.push(segB);
-        if (!parts.length) {
-          throw new Error('manual_merge_empty_output');
-        }
-
-        await ffmpegWriteFile(
-          ff,
-          list,
-          new TextEncoder().encode(parts.map((p) => `file '${p}'`).join('\n') + '\n')
-        );
-        try {
-          await ffmpegExec(ff, ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', out]);
-        } catch (copyErr) {
-          if (hasA) {
-            await ffmpegExec(
-              ff,
-              ['-y', '-i', srcA, '-t', cutA, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', segANorm]
-            );
-          }
-          await ffmpegExec(
-            ff,
-            ['-y', '-ss', cutB, '-i', srcB, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', segBNorm]
-          );
-          const normParts = [];
-          if (hasA) normParts.push(segANorm);
-          normParts.push(segBNorm);
-          await ffmpegWriteFile(
-            ff,
-            list,
-            new TextEncoder().encode(normParts.map((p) => `file '${p}'`).join('\n') + '\n')
-          );
-          await ffmpegExec(
-            ff,
-            ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', out]
-          );
-        }
-        const merged = await ffmpegReadFile(ff, out);
-        return new Blob([toStableUint8(merged)], { type: 'video/mp4' });
-      } finally {
-        for (const f of files) {
-          await ffmpegDeleteFileSafe(ff, f);
-        }
-      }
-    };
-
-    try {
-      return await runOnce();
-    } catch (e) {
-      if (isFsError(e)) {
-        return await runOnce();
-      }
-      throw e;
-    }
-  }
-
-  async function directMergeTwoVideos() {
-    const sourceA = String(selectedVideoUrl || '').trim();
-    const sourceB = String(mergeTargetVideoUrl || '').trim();
-    if (!sourceA) {
-      toast('请先选中视频1', 'warning');
-      return;
-    }
-    if (!sourceB) {
-      toast('请先选择视频2', 'warning');
-      return;
-    }
-    if (sourceA === sourceB) {
-      toast('视频1和视频2不能相同', 'warning');
-      return;
-    }
+  // ====== 视频延长（替代旧 runSplice） ======
+  async function runExtendVideo() {
+    debugLog('runExtendVideo:start');
     if (editingBusy) {
-      toast('拼接任务进行中', 'warning');
-      return;
-    }
-    editingBusy = true;
-    setEditTimelineLock(true);
-    if (directMergeBtn) directMergeBtn.disabled = true;
-    setStatus('connecting', '手动两段拼接处理中');
-    try {
-      const mergedBlob = await concatTwoVideosManual(sourceA, sourceB, mergeCutMsA, mergeCutMsB);
-      const mergedUrl = URL.createObjectURL(mergedBlob);
-      const item = initPreviewSlot() || null;
-      if (item) {
-        selectedVideoItemId = String(item.dataset.index || '');
-        item.dataset.url = mergedUrl;
-        setPreviewTitle(item, buildHistoryTitle('splice', item.dataset.index || previewCount));
-        renderVideoFromUrl({ previewItem: item }, mergedUrl);
-        refreshVideoSelectionUi();
-      }
-      bindEditVideoSource(mergedUrl);
-      scrollToWorkspaceTop();
-      setStatus('connected', '手动拼接完成');
-      toast('手动拼接完成', 'success');
-    } catch (e) {
-      setStatus('error', '手动拼接失败');
-      toast(`手动拼接失败: ${String(e && e.message ? e.message : e)}`, 'error');
-    } finally {
-      editingBusy = false;
-      setEditTimelineLock(false);
-      if (directMergeBtn) directMergeBtn.disabled = false;
-    }
-  }
-
-  async function runSplice() {
-    debugLog('runSplice:start');
-    if (editingBusy) {
-      toast('拼接任务进行中', 'warning');
+      toast('延长任务进行中', 'warning');
       return;
     }
     if (!selectedVideoUrl) {
-      toast('请先选中视频并进入编辑模式', 'error');
+      toast('请先选中视频并进入工作区', 'error');
+      return;
+    }
+    if (!currentExtendPostId) {
+      toast('无法识别当前视频的 postId，请从缓存选择视频', 'error');
       return;
     }
     const authHeader = await ensurePublicKey();
@@ -2395,14 +1671,7 @@
       return;
     }
     const prompt = String(editPromptInput ? editPromptInput.value : '').trim();
-    if (!prompt) {
-      toast('请输入拼接提示词', 'warning');
-      return;
-    }
-    if (!('crypto' in window) || !crypto.subtle) {
-      toast('当前浏览器不支持拼接所需的加密能力', 'error');
-      return;
-    }
+    const extensionStartTime = Math.max(0, lockedTimestampMs / 1000);
     editingBusy = true;
     setEditTimelineLock(true);
     const spliceRun = {
@@ -2419,126 +1688,260 @@
     };
     activeSpliceRun = spliceRun;
     setSpliceButtonState('running');
-    setStatus('connecting', '截帧与拼接处理中');
+    setStatus('connecting', '视频延长处理中');
+    setIndeterminate(true);
+    updateProgress(0);
+    startAt = Date.now();
+    startElapsedTimer();
     try {
-      const sourceVideoUrl = String(selectedVideoUrl || '').trim();
       const nextRound = editingRound + 1;
-      const frameInfo = await extractFrameAtCurrentPoint(sourceVideoUrl);
-      const editCtx = {
-        source_video_url: sourceVideoUrl,
-        source_video_sha256: frameInfo.sourceHash,
-        splice_at_ms: Math.round(lockedTimestampMs),
-        frame_index: Math.max(0, lockedFrameIndex),
-        frame_hash_sha256: frameInfo.frameHash,
-        edit_session_id: selectedVideoItemId || 'video-edit',
-        round: nextRound
-      };
-      const taskIds = await createEditVideoTasks(authHeader, frameInfo.dataUrl, prompt, editCtx);
-      spliceRun.taskIds = taskIds.slice();
-      const rawPublicKey = normalizeAuthHeader(authHeader);
-      setStatus('connecting', `拼接生成中 (${taskIds.length} 路)`);
-      for (const taskId of taskIds) {
-        const item = initPreviewSlot() || null;
-        if (!item) continue;
-        spliceRun.placeholders.set(taskId, item);
-        setPreviewTitle(item, buildHistoryTitle('splice', item.dataset.index || previewCount));
-      }
+      const basePreset = presetSelect ? presetSelect.value : 'normal';
 
-      let successCount = 0;
-      let lastMergedUrl = '';
-      let processChain = Promise.resolve();
-      const waitTasks = taskIds.map((taskId) =>
-        waitEditVideoResult(taskId, rawPublicKey, spliceRun)
-          .then((generatedVideoUrl) => {
-            processChain = processChain.then(async () => {
-              if (spliceRun.cancelled) return;
-              const item = spliceRun.placeholders.get(taskId) || null;
-              try {
-                const mergedBlob = await concatVideosLocal(frameInfo.sourceBuffer, generatedVideoUrl);
-                if (spliceRun.cancelled) {
-                  throw new Error('edit_cancelled');
-                }
-                const mergedUrl = URL.createObjectURL(mergedBlob);
-                if (item) {
-                  selectedVideoItemId = String(item.dataset.index || '');
-                  item.dataset.url = mergedUrl;
-                  item.dataset.completed = '1';
-                  item.dataset.round = String(nextRound);
-                  setPreviewTitle(item, buildHistoryTitle('splice', item.dataset.index || previewCount));
-                  const state = { previewItem: item };
-                  renderVideoFromUrl(state, mergedUrl);
-                  refreshVideoSelectionUi();
-                }
-                lastMergedUrl = mergedUrl;
-                successCount += 1;
-              } catch (singleErr) {
-                if (item) {
-                  spliceRun.failedPlaceholders.add(item);
-                }
-                spliceRun.failedReasons.push(String(singleErr && singleErr.message ? singleErr.message : singleErr));
-                if (String(singleErr && singleErr.message || '') === 'edit_cancelled') {
-                  return;
-                }
+      const body = {
+        prompt: prompt,
+        aspect_ratio: ratioSelect ? ratioSelect.value : '16:9',
+        video_length: 10, // 官方延长固定为 10 秒
+        resolution_name: resolutionSelect ? resolutionSelect.value : '480p',
+        preset: (!prompt || prompt.trim() === '') ? 'spicy' : (presetSelect ? presetSelect.value : 'normal'),
+        reasoning_effort: typeof DEFAULT_REASONING_EFFORT !== 'undefined' ? DEFAULT_REASONING_EFFORT : null,
+        concurrent: 1,
+        is_video_extension: true,
+        extend_post_id: currentExtendPostId,
+        video_extension_start_time: extensionStartTime,
+        // original_post_id & file_attachment_id: 对齐官方抓包，始终传原始图片/视频 postId
+        original_post_id: currentExtendPostId,
+        file_attachment_id: originalFileAttachmentId || currentExtendPostId,
+        stitch_with_extend: true,
+      };
+      debugLog('runExtendVideo:request', JSON.stringify(body));
+      const resp = await fetch('/v1/public/video/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authHeader,
+        },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(`延长请求失败: ${resp.status} ${errText}`);
+      }
+      const result = await resp.json();
+      const taskIds = result.task_ids || [result.task_id];
+      spliceRun.taskIds = taskIds;
+      debugLog('runExtendVideo:taskIds', taskIds);
+      // 创建历史占位
+      const serial = nextRound;
+      for (const tid of taskIds) {
+        const placeholder = initPreviewSlot();
+        setPreviewTitle(placeholder, buildHistoryTitle('splice', serial));
+        if (placeholder) placeholder.dataset.taskId = tid;
+        spliceRun.placeholders.set(tid, placeholder);
+      }
+      editingRound = nextRound;
+      // 连接 SSE
+      const rawPublicKey = normalizeAuthHeader(authHeader);
+      for (const tid of taskIds) {
+        const sseUrl = buildSseUrl(tid, rawPublicKey);
+        const source = new EventSource(sseUrl);
+        spliceRun.sources.add(source);
+        const taskState = {
+          progress: 0,
+          videoUrl: '',
+          done: false,
+          error: false,
+          progressBuffer: '',
+          contentBuffer: '',
+          collectingContent: false
+        };
+        source.onmessage = (event) => {
+          if (spliceRun.cancelled) return;
+          const raw = String(event.data || '').trim();
+          console.log('[SSE 调试] 收到数据:', raw);
+          if (raw === '[DONE]') {
+            console.log('[SSE 调试] 收到 [DONE] 标记');
+            taskState.done = true;
+            source.close();
+            checkAllExtendDone(spliceRun);
+            return;
+          }
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed.error) {
+              console.error('[SSE 调试] 解析到错误对象:', parsed.error);
+              taskState.error = true;
+              taskState.done = true;
+              spliceRun.failedReasons.push(parsed.error);
+              spliceRun.failedPlaceholders.add(tid);
+              const item = spliceRun.placeholders.get(tid);
+              if (item) {
+                setPreviewTitle(item, `延长失败: ${parsed.error}`);
+                item.classList.add('is-failed');
               }
-            });
-          })
-          .catch((err) => {
-            if (String(err && err.message || '') === 'edit_cancelled') {
+              source.close();
+              checkAllExtendDone(spliceRun);
               return;
             }
-            spliceRun.failedReasons.push(String(err && err.message ? err.message : err));
-            const missItem = spliceRun.placeholders.get(taskId) || null;
-            if (missItem) spliceRun.failedPlaceholders.add(missItem);
-          })
-      );
-      await Promise.allSettled(waitTasks);
-      await processChain;
-      if (spliceRun.failedPlaceholders && spliceRun.failedPlaceholders.size) {
-        spliceRun.failedPlaceholders.forEach((item) => {
-          if (!item) return;
-          const completed = String(item.dataset.completed || '0') === '1';
-          if (!completed) {
-            removePreviewItem(item);
-          }
-        });
-        spliceRun.failedPlaceholders.clear();
-      }
 
-      if (spliceRun.cancelled) {
-        throw new Error('edit_cancelled');
+            const choice = parsed.choices && parsed.choices[0];
+            const delta = choice && choice.delta ? choice.delta : null;
+            if (delta && delta.content) {
+              const text = delta.content;
+
+              if (text.includes('<think>') || text.includes('</think>')) {
+                return;
+              }
+
+              if (!taskState.collectingContent) {
+                if (text.includes('<video') || text.includes('[video](') || text.includes('http://') || text.includes('https://') || text.includes('<https://')) {
+                  taskState.collectingContent = true;
+                }
+              }
+
+              if (taskState.collectingContent) {
+                taskState.contentBuffer += text;
+                const info = extractVideoInfo(taskState.contentBuffer);
+                let videoUrl = (info && info.url) ? info.url : extractVideoUrlFromAnyText(taskState.contentBuffer);
+
+                // 新增：提取 <source src="...">
+                if (!videoUrl) {
+                  const m = taskState.contentBuffer.match(/src="([^"]+\.mp4)"/i);
+                  if (m) {
+                    videoUrl = m[1];
+                  }
+                }
+
+                if (videoUrl && !taskState.videoUrl) {
+                  console.log('[SSE 调试] 解析到生成的视频 URL:', videoUrl);
+                  taskState.videoUrl = videoUrl;
+                  const item = spliceRun.placeholders.get(tid);
+                  if (item) {
+                    item.classList.remove('is-generating');
+                    item.classList.remove('is-failed');
+                    if (info && info.html) {
+                      renderVideoFromHtml({ previewItem: item }, info.html);
+                    } else {
+                      renderVideoFromUrl({ previewItem: item }, videoUrl);
+                    }
+                  }
+
+
+
+                  // 更新工作区视频和 extendPostId
+                  selectedVideoUrl = videoUrl;
+                  if (editVideo) {
+                    editVideo.src = videoUrl;
+                    editVideo.load();
+                  }
+                  // 从新视频 URL 提取 postId 用于链式延长
+                  const newPostId = extractPostIdFromFileName(videoUrl);
+                  if (newPostId) {
+                    currentExtendPostId = newPostId;  // 更新当前 postId
+                    currentFileAttachmentId = newPostId;
+                    console.log('[SSE 调试] 从新视频成功提取到新的 extend_post_id:', newPostId);
+                  } else {
+                    console.warn('[SSE 调试] 未能从新视频地址提取出新的 extend_post_id!', videoUrl);
+                  }
+                  setEditMeta();
+                  toast('视频延长完成', 'success');
+                }
+              } else {
+                taskState.progressBuffer += text;
+                // 从缓冲中匹配所有可能是进度的数字，包括带换行的文本
+                const matches = [...taskState.progressBuffer.matchAll(/当前进度\s*(\d+)\s*%/g)];
+                if (matches.length) {
+                  const lastValue = parseInt(matches[matches.length - 1][1], 10);
+                  if (lastValue >= taskState.progress) {
+                    taskState.progress = lastValue;
+                    setIndeterminate(false);
+                    updateProgress(taskState.progress);
+                  }
+                }
+                if (text.includes('超分辨率')) {
+                  setStatus('connecting', '超分辨率中');
+                  setIndeterminate(true);
+                }
+
+                // 定期清理过长的缓冲
+                if (taskState.progressBuffer.length > 500) {
+                  taskState.progressBuffer = taskState.progressBuffer.slice(-200);
+                }
+              }
+            }
+          } catch (e) {
+            // debugLog('runExtendVideo:parse_error', e); // ignore chunks split issues
+          }
+        };
+        source.onerror = (err) => {
+          console.error('[SSE 调试] EventSource 抛出 onerror 异常', err);
+          taskState.error = true;
+          taskState.done = true;
+          source.close();
+          checkAllExtendDone(spliceRun);
+        };
       }
-      if (!successCount || !lastMergedUrl) {
-        const firstReason = String((spliceRun.failedReasons && spliceRun.failedReasons[0]) || '').trim();
-        throw new Error(firstReason || 'edit_all_failed');
-      }
-      bindEditVideoSource(lastMergedUrl);
-      scrollToWorkspaceTop();
-      editingRound = nextRound;
-      setStatus('connected', `拼接完成（成功 ${successCount}/${taskIds.length}）`);
-      toast(`拼接完成，成功 ${successCount}/${taskIds.length}`, 'success');
     } catch (e) {
-      console.error('[video-splice-debug] runSplice:error', e);
-      const msg = String(e && e.message ? e.message : e);
-      if (msg === 'edit_cancelled') {
-        setStatus('', '未连接');
-      } else {
-        setStatus('error', '拼接失败');
-        if (msg === 'extract_frame_failed_near_tail') {
-          toast('拼接失败: 当前帧过于接近结尾，请前移 2-3 帧再试', 'error');
-        } else if (msg === 'edit_video_url_missing') {
-          toast('拼接失败: 生成结果未返回视频地址', 'error');
-        } else {
-          toast(`拼接失败: ${msg}`, 'error');
-        }
-      }
-    } finally {
+      debugLog('runExtendVideo:error', e);
+      toast(String(e.message || '视频延长失败'), 'error');
+      setStatus('error', '延长失败');
       spliceRun.done = true;
-      if (activeSpliceRun === spliceRun) {
-        activeSpliceRun = null;
-      }
+      activeSpliceRun = null;
       editingBusy = false;
       setEditTimelineLock(false);
       setSpliceButtonState('idle');
+    }
+  }
+
+  function checkAllExtendDone(spliceRun) {
+    const allDone = [...spliceRun.placeholders.keys()].every(tid => {
+      return spliceRun.failedPlaceholders.has(tid) ||
+        (spliceRun.placeholders.get(tid) && spliceRun.placeholders.get(tid).dataset.completed === '1');
+    });
+    // 简化判断：所有 SSE 都关闭就算完成
+    let openSources = 0;
+    for (const src of spliceRun.sources) {
+      if (src.readyState !== EventSource.CLOSED) openSources++;
+    }
+    if (openSources > 0) return;
+    spliceRun.done = true;
+    activeSpliceRun = null;
+    editingBusy = false;
+    setEditTimelineLock(false);
+    setSpliceButtonState('idle');
+    stopElapsedTimer();
+    setIndeterminate(false);
+    if (!spliceRun.failedReasons.length) {
+      updateProgress(100);
+    }
+    if (spliceRun.failedReasons.length) {
+      setStatus('error', '延长部分失败');
+    } else {
+      setStatus('connected', '延长完成');
+    }
+  }
+
+  async function requestCancelExtend() {
+    if (!activeSpliceRun || activeSpliceRun.done) return;
+    activeSpliceRun.cancelled = true;
+    activeSpliceRun.cancelling = true;
+    setSpliceButtonState('stopping');
+    for (const src of activeSpliceRun.sources) {
+      try { src.close(); } catch (e) { /* ignore */ }
+    }
+    const taskIdsToStop = Array.from(activeSpliceRun.taskIds || []);
+    activeSpliceRun.done = true;
+    activeSpliceRun = null;
+    editingBusy = false;
+    setEditTimelineLock(false);
+    setSpliceButtonState('idle');
+    stopElapsedTimer();
+    setIndeterminate(false);
+    setStatus('disconnected', '已取消');
+    toast('已中止延长', 'info');
+
+    if (taskIdsToStop.length > 0) {
+      const authHeader = await ensurePublicKey();
+      stopVideoTask(taskIdsToStop, authHeader).catch(e => console.error('[SSE] 延长中止请求失败', e));
     }
   }
 
@@ -2600,11 +2003,23 @@
       const duration = Number(editVideo.duration || 0);
       if (!Number.isFinite(duration) || duration <= 0) return;
       const ratio = Number(editTimeline.value || 0) / EDIT_TIMELINE_MAX;
-      const nextTime = Math.max(0, Math.min(duration, duration * ratio));
+      let nextTime = Math.max(0, Math.min(duration, duration * ratio));
+      // 官方限制最多延长至 30s，即起始点不晚于 20s
+      if (nextTime > 20) {
+        nextTime = 20;
+        // 强制回弹对应的 UI 表现
+        const forceRatio = 20 / duration;
+        editTimeline.value = String(Math.round(forceRatio * EDIT_TIMELINE_MAX));
+      }
       editVideo.currentTime = nextTime;
       updateDeleteZoneTrack(editTimeline);
       lockedTimestampMs = clampEditTimestampMs(Math.round(nextTime * 1000));
-      if (editTimeText) editTimeText.textContent = formatMs(lockedTimestampMs);
+      if (editTimeText) {
+        editTimeText.textContent = formatMs(lockedTimestampMs);
+        if (nextTime === 20 && duration > 20) {
+          editTimeText.textContent += " (已达官方20s延长上限)";
+        }
+      }
       lockFrameByCurrentTime();
     });
   }
@@ -2621,7 +2036,7 @@
       }
       lockedTimestampMs = 0;
       lockedFrameIndex = 0;
-      lastFrameHash = '';
+
       setEditMeta();
       updateTimelineByVideoTime();
     });
@@ -2647,77 +2062,6 @@
     setTimeout(() => scheduleWorkspacePreviewLock(true), 160);
   });
 
-  if (mergeVideoPreviewA) {
-    enforceInlinePlayback(mergeVideoPreviewA);
-    mergeVideoPreviewA.addEventListener('loadedmetadata', () => {
-      const duration = Number(mergeVideoPreviewA.duration || 0);
-      if (mergeDurationA) {
-        mergeDurationA.textContent = duration > 0 ? `总时长 ${formatMs(duration * 1000)}` : '总时长 -';
-      }
-      mergeCutMsA = 0;
-      if (mergeTimeTextA) mergeTimeTextA.textContent = formatMs(0);
-      if (mergeTimelineA) mergeTimelineA.value = '0';
-      updateDeleteZoneTrack(mergeTimelineA);
-    });
-  }
-
-  if (mergeVideoPreviewB) {
-    enforceInlinePlayback(mergeVideoPreviewB);
-    mergeVideoPreviewB.addEventListener('loadedmetadata', () => {
-      const duration = Number(mergeVideoPreviewB.duration || 0);
-      if (mergeDurationB) {
-        mergeDurationB.textContent = duration > 0 ? `总时长 ${formatMs(duration * 1000)}` : '总时长 -';
-      }
-      mergeCutMsB = 0;
-      if (mergeTimeTextB) mergeTimeTextB.textContent = formatMs(0);
-      if (mergeTimelineB) mergeTimelineB.value = '0';
-      updateDeleteZoneTrack(mergeTimelineB);
-    });
-  }
-
-  if (mergeTimelineA) {
-    mergeTimelineA.addEventListener('input', () => {
-      if (!mergeVideoPreviewA) return;
-      const duration = Number(mergeVideoPreviewA.duration || 0);
-      if (!Number.isFinite(duration) || duration <= 0) return;
-      const ratio = Number(mergeTimelineA.value || 0) / EDIT_TIMELINE_MAX;
-      const nextTime = Math.max(0, Math.min(duration, duration * ratio));
-      mergeVideoPreviewA.currentTime = nextTime;
-      updateDeleteZoneTrack(mergeTimelineA);
-      mergeCutMsA = Math.round(nextTime * 1000);
-      if (mergeTimeTextA) mergeTimeTextA.textContent = formatMs(mergeCutMsA);
-    });
-  }
-
-  if (mergeTimelineB) {
-    mergeTimelineB.addEventListener('input', () => {
-      if (!mergeVideoPreviewB) return;
-      const duration = Number(mergeVideoPreviewB.duration || 0);
-      if (!Number.isFinite(duration) || duration <= 0) return;
-      const ratio = Number(mergeTimelineB.value || 0) / EDIT_TIMELINE_MAX;
-      const nextTime = Math.max(0, Math.min(duration, duration * ratio));
-      mergeVideoPreviewB.currentTime = nextTime;
-      updateDeleteZoneTrack(mergeTimelineB);
-      mergeCutMsB = Math.round(nextTime * 1000);
-      if (mergeTimeTextB) mergeTimeTextB.textContent = formatMs(mergeCutMsB);
-    });
-  }
-
-  if (spliceBtn) {
-    spliceBtn.addEventListener('click', () => {
-      if (activeSpliceRun && !activeSpliceRun.done) {
-        requestCancelSplice();
-        return;
-      }
-      runSplice();
-    });
-  }
-
-  if (directMergeBtn) {
-    directMergeBtn.addEventListener('click', () => {
-      directMergeTwoVideos();
-    });
-  }
 
   if (pickCachedVideoBtn) {
     pickCachedVideoBtn.addEventListener('click', async () => {
@@ -2760,24 +2104,6 @@
     });
   }
 
-  if (pickMergeVideoBtn) {
-    pickMergeVideoBtn.addEventListener('click', async () => {
-      try {
-        cacheModalPickMode = 'merge_target';
-        openCacheVideoModal(pickMergeVideoBtn);
-        if (cacheVideoList) {
-          cacheVideoList.innerHTML = '<div class="video-empty">正在读取缓存视频...</div>';
-        }
-        const items = await loadCachedVideos();
-        renderCachedVideoList(items);
-      } catch (e) {
-        if (cacheVideoList) {
-          cacheVideoList.innerHTML = '<div class="video-empty">读取失败，请稍后重试</div>';
-        }
-        toast('读取缓存视频失败', 'error');
-      }
-    });
-  }
   if (closeCacheVideoModalBtn) {
     closeCacheVideoModalBtn.addEventListener('click', () => {
       closeCacheVideoModal();
@@ -2828,11 +2154,16 @@
           toast('该视频暂无可用地址', 'warning');
           return;
         }
-        mergeTargetVideoUrl = bUrl;
-        mergeTargetVideoName = `视频 ${String(item.dataset.index || '')}`;
-        updateMergeLabels();
-        bindMergeVideoB(mergeTargetVideoUrl);
-        toast('已将该视频设为视频2', 'success');
+        // 提取 postId 用于延长
+        const postId = extractPostIdFromFileName(bUrl);
+        if (postId) {
+          currentExtendPostId = postId;
+          currentFileAttachmentId = postId;
+          setEditMeta();
+          toast('已提取该视频的 postId', 'success');
+        } else {
+          toast('无法从该视频提取 postId', 'warning');
+        }
         return;
       }
       selectedVideoItemId = String(item.dataset.index || '');
@@ -2841,8 +2172,7 @@
       if (enterEditBtn) {
         enterEditBtn.disabled = !selectedVideoUrl;
       }
-      updateMergeLabels();
-      bindMergeVideoA(selectedVideoUrl);
+
       if (target.classList.contains('video-edit')) {
         event.preventDefault();
         openEditPanel();
@@ -2865,7 +2195,12 @@
         const blobUrl = URL.createObjectURL(blob);
         const anchor = document.createElement('a');
         anchor.href = blobUrl;
-        anchor.download = index ? `grok_video_${index}.mp4` : 'grok_video.mp4';
+        // 文件名包含 postId：grok_video_{postId}_{index}.mp4
+        const postIdInUrl = extractPostIdFromFileName(url);
+        const nameParts = ['grok_video'];
+        if (postIdInUrl) nameParts.push(postIdInUrl);
+        if (index) nameParts.push(index);
+        anchor.download = `${nameParts.join('_')}.mp4`;
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
@@ -2961,7 +2296,9 @@
         parentPostInput.value = resolved.parentPostId;
       }
       if (raw && fileDataUrl) {
-        clearFileSelection();
+        fileDataUrl = '';
+        if (imageFileInput) imageFileInput.value = '';
+        if (imageFileName) imageFileName.textContent = '未选择文件';
       }
       setReferencePreview(resolved.url || resolved.sourceUrl || raw, resolved.parentPostId || '');
     });
@@ -2977,7 +2314,9 @@
           parentPostInput.value = resolved.parentPostId;
         }
         if (fileDataUrl) {
-          clearFileSelection();
+          fileDataUrl = '';
+          if (imageFileInput) imageFileInput.value = '';
+          if (imageFileName) imageFileName.textContent = '未选择文件';
         }
         setReferencePreview(resolved.url || resolved.sourceUrl || text, resolved.parentPostId || '');
       }
@@ -3083,15 +2422,21 @@
       el.addEventListener('change', updateMeta);
     });
 
-  window.__VIDEO_FFMPEG_LOGS__ = () => ffmpegLogBuffer.slice();
-
   updateMeta();
-  updateMergeLabels();
   updateHistoryCount();
-  updateManualActionsVisibility();
   refreshAllDeleteZoneTracks();
   syncTimelineAvailability();
   setSpliceButtonState('idle');
+
+  if (spliceBtn) {
+    spliceBtn.addEventListener('click', () => {
+      if (activeSpliceRun && !activeSpliceRun.done) {
+        requestCancelExtend();
+        return;
+      }
+      runExtendVideo();
+    });
+  }
   if (imageUrlInput && imageUrlInput.value.trim()) {
     const resolved = resolveReferenceByText(imageUrlInput.value.trim());
     setReferencePreview(resolved.url || resolved.sourceUrl || imageUrlInput.value.trim(), resolved.parentPostId || '');

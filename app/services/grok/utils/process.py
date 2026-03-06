@@ -71,7 +71,10 @@ def _collect_images(obj: Any) -> List[str]:
 
 
 async def _with_idle_timeout(
-    iterable: AsyncIterable[T], idle_timeout: float, model: str = ""
+    iterable: AsyncIterable[T],
+    idle_timeout: float,
+    model: str = "",
+    first_item_timeout: Optional[float] = None,
 ) -> AsyncGenerator[T, None]:
     """
     包装异步迭代器，添加空闲超时检测
@@ -81,6 +84,16 @@ async def _with_idle_timeout(
         idle_timeout: 空闲超时时间(秒)，0 表示禁用
         model: 模型名称(用于日志)
     """
+    try:
+        idle_timeout = float(idle_timeout or 0)
+    except (ValueError, TypeError):
+        idle_timeout = 0.0
+
+    try:
+        first_item_timeout = float(first_item_timeout or 0) if first_item_timeout is not None else 0.0
+    except (ValueError, TypeError):
+        first_item_timeout = 0.0
+
     if idle_timeout <= 0:
         async for item in iterable:
             yield item
@@ -97,17 +110,27 @@ async def _with_idle_timeout(
         except Exception:
             pass
 
+    got_first_item = False
     while True:
         try:
-            item = await asyncio.wait_for(iterator.__anext__(), timeout=idle_timeout)
+            current_timeout = idle_timeout
+            if (not got_first_item) and first_item_timeout and first_item_timeout > 0:
+                current_timeout = first_item_timeout
+            item = await asyncio.wait_for(iterator.__anext__(), timeout=current_timeout)
+            got_first_item = True
             yield item
         except asyncio.TimeoutError:
             logger.warning(
-                f"Stream idle timeout after {idle_timeout}s",
-                extra={"model": model, "idle_timeout": idle_timeout},
+                f"Stream idle timeout after {current_timeout}s",
+                extra={
+                    "model": model,
+                    "idle_timeout": current_timeout,
+                    "first_item_timeout": first_item_timeout,
+                    "got_first_item": got_first_item,
+                },
             )
             await _maybe_aclose(iterator)
-            raise StreamIdleTimeoutError(idle_timeout)
+            raise StreamIdleTimeoutError(current_timeout)
         except asyncio.CancelledError:
             await _maybe_aclose(iterator)
             raise

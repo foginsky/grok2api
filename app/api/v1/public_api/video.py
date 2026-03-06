@@ -139,6 +139,13 @@ async def _new_session(
     parent_post_id: Optional[str],
     source_image_url: Optional[str],
     reasoning_effort: Optional[str],
+    # 视频延长相关
+    is_video_extension: bool = False,
+    extend_post_id: Optional[str] = None,
+    video_extension_start_time: Optional[float] = None,
+    original_post_id: Optional[str] = None,
+    file_attachment_id: Optional[str] = None,
+    stitch_with_extend: bool = True,
 ) -> str:
     task_id = uuid.uuid4().hex
     now = time.time()
@@ -154,6 +161,12 @@ async def _new_session(
             "parent_post_id": parent_post_id,
             "source_image_url": source_image_url,
             "reasoning_effort": reasoning_effort,
+            "is_video_extension": is_video_extension,
+            "extend_post_id": extend_post_id,
+            "video_extension_start_time": video_extension_start_time,
+            "original_post_id": original_post_id,
+            "file_attachment_id": file_attachment_id,
+            "stitch_with_extend": stitch_with_extend,
             "created_at": now,
         }
     return task_id
@@ -234,6 +247,13 @@ class VideoStartRequest(BaseModel):
     source_image_url: Optional[str] = None
     reasoning_effort: Optional[str] = None
     edit_context: Optional[Dict[str, Any]] = None
+    # 视频延长相关字段
+    is_video_extension: Optional[bool] = False
+    extend_post_id: Optional[str] = None
+    video_extension_start_time: Optional[float] = None
+    original_post_id: Optional[str] = None
+    file_attachment_id: Optional[str] = None
+    stitch_with_extend: Optional[bool] = True
 
 
 @router.post("/video/start", dependencies=[Depends(verify_public_key)])
@@ -281,15 +301,47 @@ async def public_video_start(data: VideoStartRequest):
     elif source_image_url:
         _validate_image_url(source_image_url)
 
-    if parent_post_id and image_url:
-        raise HTTPException(
-            status_code=400, detail="image_url and parent_post_id cannot be used together"
+    # 视频延长参数解析
+    is_video_extension = bool(data.is_video_extension)
+    extend_post_id = _validate_parent_post_id(data.extend_post_id or "")
+    video_extension_start_time = data.video_extension_start_time
+    original_post_id = _validate_parent_post_id(data.original_post_id or "")
+    file_attachment_id = _validate_parent_post_id(data.file_attachment_id or "")
+    stitch_with_extend = bool(data.stitch_with_extend if data.stitch_with_extend is not None else True)
+
+    if is_video_extension:
+        # 视频延长模式校验
+        if not extend_post_id:
+            raise HTTPException(
+                status_code=400,
+                detail="extend_post_id is required for video extension",
+            )
+        if video_extension_start_time is None or video_extension_start_time < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="video_extension_start_time must be a non-negative number",
+            )
+        
+        # 官方服务端对延长视频容易触发风控，在此强制固定并发为1
+        concurrent = 1
+
+        logger.info(
+            "Public video extension request: "
+            f"extend_post_id={extend_post_id}, "
+            f"start_time={video_extension_start_time}, "
+            f"original_post_id={original_post_id}, "
+            f"file_attachment_id={file_attachment_id}"
         )
-    if not prompt and not image_url and not parent_post_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Prompt cannot be empty when no image_url/parent_post_id is provided",
-        )
+    else:
+        if parent_post_id and image_url:
+            raise HTTPException(
+                status_code=400, detail="image_url and parent_post_id cannot be used together"
+            )
+        if not prompt and not image_url and not parent_post_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Prompt cannot be empty when no image_url/parent_post_id is provided",
+            )
 
     reasoning_effort = (data.reasoning_effort or "").strip() or None
     if reasoning_effort:
@@ -326,6 +378,12 @@ async def public_video_start(data: VideoStartRequest):
             parent_post_id,
             source_image_url,
             reasoning_effort,
+            is_video_extension=is_video_extension,
+            extend_post_id=extend_post_id,
+            video_extension_start_time=video_extension_start_time,
+            original_post_id=original_post_id,
+            file_attachment_id=file_attachment_id,
+            stitch_with_extend=stitch_with_extend,
         )
         task_ids.append(task_id)
 
@@ -335,6 +393,8 @@ async def public_video_start(data: VideoStartRequest):
         "concurrent": concurrent,
         "aspect_ratio": aspect_ratio,
         "parent_post_id": parent_post_id,
+        "extend_post_id": extend_post_id,
+        "file_attachment_id": file_attachment_id or "",
     }
 
 
@@ -401,6 +461,14 @@ async def public_video_sse(request: Request, task_id: str = Query("")):
             else:
                 messages = [{"role": "user", "content": prompt}]
 
+            # 从 session 取得视频延长参数
+            is_video_extension = bool(session.get("is_video_extension"))
+            extend_post_id = str(session.get("extend_post_id") or "").strip() or None
+            video_extension_start_time = session.get("video_extension_start_time")
+            original_post_id = str(session.get("original_post_id") or "").strip() or None
+            file_attachment_id = str(session.get("file_attachment_id") or "").strip() or None
+            stitch_with_extend = bool(session.get("stitch_with_extend", True))
+
             stream = await VideoService.completions(
                 model_id,
                 messages,
@@ -411,12 +479,21 @@ async def public_video_sse(request: Request, task_id: str = Query("")):
                 resolution=resolution_name,
                 preset=preset,
                 parent_post_id=parent_post_id or None,
+                extend_post_id=extend_post_id if is_video_extension else None,
+                video_extension_start_time=video_extension_start_time if is_video_extension else None,
+                original_post_id=original_post_id if is_video_extension else None,
+                file_attachment_id=file_attachment_id if is_video_extension else None,
+                stitch_with_extend=stitch_with_extend,
                 source_image_url=source_image_url,
                 preferred_token=preferred_token,
             )
 
             async for chunk in stream:
                 if await request.is_disconnected():
+                    logger.info(f"Public video client disconnected: {task_id}")
+                    break
+                if task_id not in _VIDEO_SESSIONS:
+                    logger.info(f"Public video task stopped by user: {task_id}")
                     break
                 yield chunk
         except Exception as e:

@@ -998,7 +998,10 @@
       const timestamp = Date.now();
       const seq = meta && meta.sequence ? meta.sequence : 'unknown';
       const ext = mime === 'image/png' ? 'png' : 'jpg';
-      const filename = `imagine_${timestamp}_${seq}.${ext}`;
+      const autoNameParts = ['imagine', String(timestamp)];
+      if (parentPostId) autoNameParts.push(parentPostId.slice(0, 16));
+      autoNameParts.push(String(seq));
+      const filename = `${autoNameParts.join('_')}.${ext}`;
 
       if (useFileSystemAPI && directoryHandle) {
         saveToFileSystem(base64, filename).catch(() => {
@@ -1752,7 +1755,11 @@
           if (!blob) {
             throw new Error('empty blob');
           }
-          const filename = `${prompt.substring(0, 30).replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_')}_${processed + 1}.png`;
+          const pId = String(item.dataset.parentPostId || '').trim();
+          const nameParts = [prompt.substring(0, 20).replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_')];
+          if (pId) nameParts.push(pId.slice(0, 16));
+          nameParts.push(String(processed + 1));
+          const filename = `${nameParts.join('_')}.png`;
           imgFolder.file(filename, blob);
           processed++;
 

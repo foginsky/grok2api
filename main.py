@@ -45,6 +45,7 @@ from app.api.v1.response import router as responses_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
 from app.api.v1.admin_api import router as admin_router
 from app.api.v1.public_api import router as public_router
+from app.api.v1.video_api import router as video_router
 from app.api.pages import router as pages_router
 from fastapi.staticfiles import StaticFiles
 
@@ -157,11 +158,30 @@ async def lifespan(app: FastAPI):
         scheduler = get_scheduler(interval)
         scheduler.start()
 
+    # 5. 启动 cf_clearance 自动刷新
+    #    环境变量 FLARESOLVERR_URL 会作为初始值写入配置（兼容旧部署方式）
+    _flaresolverr_env = os.getenv("FLARESOLVERR_URL", "")
+    if _flaresolverr_env and not get_config("proxy.flaresolverr_url"):
+        await config.update({
+            "proxy": {
+                "enabled": True,
+                "flaresolverr_url": _flaresolverr_env,
+                "refresh_interval": int(os.getenv("CF_REFRESH_INTERVAL", "600")),
+                "timeout": int(os.getenv("CF_TIMEOUT", "60")),
+            }
+        })
+
+    from app.services.cf_refresh import start as cf_refresh_start
+    cf_refresh_start()
+
     logger.info("Application startup complete.")
     yield
 
     # 关闭
     logger.info("Shutting down Grok2API...")
+
+    from app.services.cf_refresh import stop as cf_refresh_stop
+    cf_refresh_stop()
 
     from app.core.storage import StorageFactory
 
@@ -215,6 +235,9 @@ def create_app() -> FastAPI:
     app.include_router(
         responses_router, dependencies=[Depends(verify_api_key)]
     )
+    app.include_router(
+        video_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
+    )
     app.include_router(files_router, prefix="/v1/files")
 
     # 静态文件服务
@@ -234,8 +257,11 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    import uvicorn
-
+    print("推荐使用 Granian 命令行启动服务，例如：")
+    print("granian --interface asgi --host 0.0.0.0 --port 8000 main:app")
+    print("\n或者使用内置脚本：python scripts/run.py")
+    
+    import argparse
     parser = argparse.ArgumentParser(description="启动 Grok2API 服务")
     parser.add_argument(
         "--host",

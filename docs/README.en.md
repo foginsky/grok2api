@@ -277,41 +277,34 @@ Config file: `data/config.toml`
 
 | Module | Field | Key | Description | Default |
 | :-- | :-- | :-- | :-- | :-- |
-| **app** | `app_url` | App URL | External base URL used for file links. | `http://127.0.0.1:8000` |
+| **app** | `app_url` | App URL | External base URL used for file links. | `""` |
 |  | `app_key` | Admin password | Login password for admin panel. | `grok2api` |
 |  | `api_key` | API key | Optional API key for access. | `""` |
+|  | `public_enabled` | Public mode | Enable public features. | `false` |
+|  | `public_key` | Public key | Public access key (optional). | `""` |
 |  | `image_format` | Image format | `url` or `base64`. | `url` |
 |  | `video_format` | Video format | `html` or `url` (processed link). | `html` |
 |  | `temporary` | Temporary chat | Enable temporary chat mode. | `true` |
 |  | `disable_memory` | Disable memory | Disable Grok memory. | `true` |
 |  | `stream` | Stream | Enable streaming by default. | `true` |
-|  | `thinking` | Thinking | Enable reasoning output. | `true` |
+|  | `thinking` | Thinking | Enable reasoning output by default. | `true` |
 |  | `dynamic_statsig` | Dynamic statsig | Generate dynamic Statsig values. | `true` |
-|  | `filter_tags` | Filter tags | Filter special tags in responses. | `["xaiartifact", "xai:tool_usage_card", "grok:render"]` |
+|  | `filter_tags` | Filter tags | Filter special tags in responses. | `["xaiartifact","xai:tool_usage_card","grok:render"]` |
 | **proxy** | `base_proxy_url` | Base proxy URL | Proxy to Grok web. | `""` |
 |  | `asset_proxy_url` | Asset proxy URL | Proxy to Grok assets (img/video). | `""` |
-|  | `cf_clearance` | CF Clearance | Cloudflare clearance cookie. | `""` |
+|  | `enabled` | CF auto refresh | Enable Cloudflare auto refresh. | `false` |
+|  | `flaresolverr_url` | FlareSolverr URL | FlareSolverr HTTP endpoint. | `""` |
+|  | `refresh_interval` | Refresh interval | Refresh cf_clearance interval (seconds). | `3600` |
+|  | `timeout` | Challenge timeout | CF challenge timeout (seconds). | `60` |
+|  | `cf_clearance` | CF clearance | Cloudflare clearance cookie. | `""` |
 |  | `browser` | Browser fingerprint | curl_cffi fingerprint (e.g. chrome136). | `chrome136` |
-|  | `user_agent` | User-Agent | HTTP User-Agent string. | `Mozilla/5.0 (Macintosh; ...)` |
-| **voice** | `timeout` | Timeout | Voice request timeout (seconds). | `120` |
-| **chat** | `concurrent` | Concurrency | Reverse interface concurrency limit. | `10` |
-|  | `timeout` | Timeout | Reverse request timeout (seconds). | `60` |
-|  | `stream_timeout` | Stream idle timeout | Stream idle timeout (seconds). | `60` |
-| **video** | `concurrent` | Concurrency | Reverse interface concurrency limit. | `10` |
-|  | `timeout` | Timeout | Reverse request timeout (seconds). | `60` |
-|  | `stream_timeout` | Stream idle timeout | Stream idle timeout (seconds). | `60` |
+|  | `user_agent` | User-Agent | HTTP User-Agent string. | `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36` |
 | **retry** | `max_retry` | Max retry | Max retries for upstream failures. | `3` |
 |  | `retry_status_codes` | Retry codes | HTTP status codes that trigger retry. | `[401, 429, 403]` |
 |  | `retry_backoff_base` | Backoff base | Retry backoff base seconds. | `0.5` |
 |  | `retry_backoff_factor` | Backoff factor | Exponential backoff factor. | `2.0` |
-|  | `retry_backoff_max` | Backoff max | Max delay per retry (seconds). | `30.0` |
-|  | `retry_budget` | Retry budget | Max total retry time (seconds). | `90.0` |
-| **image** | `timeout` | Timeout | WebSocket timeout (seconds). | `120` |
-|  | `stream_timeout` | Stream idle timeout | WS stream idle timeout (seconds). | `120` |
-|  | `final_timeout` | Final timeout | Wait time after medium image (seconds). | `15` |
-|  | `nsfw` | NSFW | Enable NSFW. | `true` |
-|  | `medium_min_bytes` | Medium min bytes | Minimum size for medium image. | `30000` |
-|  | `final_min_bytes` | Final min bytes | Minimum size for final image (JPG > 100KB typical). | `100000` |
+|  | `retry_backoff_max` | Backoff max | Max delay per retry (seconds). | `20.0` |
+|  | `retry_budget` | Retry budget | Max total retry time (seconds). | `60.0` |
 | **token** | `auto_refresh` | Auto refresh | Enable token auto refresh. | `true` |
 |  | `refresh_interval_hours` | Refresh interval | Basic token refresh interval (hours). | `8` |
 |  | `super_refresh_interval_hours` | Super refresh interval | Super token refresh interval (hours). | `2` |

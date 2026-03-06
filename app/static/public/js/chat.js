@@ -20,15 +20,392 @@
   const attachBtn = document.getElementById('attachBtn');
   const fileInput = document.getElementById('fileInput');
   const fileBadge = document.getElementById('fileBadge');
+  const chatSidebar = document.getElementById('chatSidebar');
+  const sidebarOverlay = document.getElementById('sidebarOverlay');
+  const sidebarToggle = document.getElementById('sidebarToggle');
+  const newChatBtn = document.getElementById('newChatBtn');
+  const collapseSidebarBtn = document.getElementById('collapseSidebarBtn');
+  const sidebarExpandBtn = document.getElementById('sidebarExpandBtn');
+  const sessionListEl = document.getElementById('sessionList');
 
   let messageHistory = [];
   let isSending = false;
   let abortController = null;
   let attachments = [];
   let availableModels = [];
+  let activeStreamInfo = null;
+  let sessionsData = null;
   const feedbackUrl = 'https://github.com/chenyme/grok2api/issues/new';
+  const STORAGE_KEY = 'grok2api_chat_sessions';
+  const SIDEBAR_STATE_KEY = 'grok2api_chat_sidebar_collapsed';
+  const MAX_CONTEXT_MESSAGES = 30;
+  const DEFAULT_SESSION_TITLES = ['新会话', 'New Session'];
   const SEND_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"></path><path d="M22 2L15 22L11 13L2 9L22 2Z"></path></svg>';
   const STOP_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"></rect></svg>';
+
+  function generateId() {
+    return crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
+  }
+
+  function isDefaultTitleValue(title) {
+    return DEFAULT_SESSION_TITLES.includes(title);
+  }
+
+  function getMessageDisplay(msg) {
+    if (!msg) return '';
+    if (typeof msg.content === 'string') return msg.content;
+    if (typeof msg.display === 'string' && msg.display.trim()) return msg.display;
+    if (Array.isArray(msg.content)) {
+      const textParts = [];
+      let fileCount = 0;
+      for (const block of msg.content) {
+        if (!block) continue;
+        if (block.type === 'text' && block.text) {
+          textParts.push(block.text);
+        }
+        if (block.type === 'file') {
+          fileCount += 1;
+        }
+      }
+      const suffix = fileCount > 0 ? `\n[文件] ${fileCount} 个` : '';
+      return `${textParts.join('\n')}${suffix}`.trim() || '（复合内容）';
+    }
+    return '（复合内容）';
+  }
+
+  function serializeMessage(msg) {
+    if (!msg || typeof msg !== 'object') return msg;
+    if (Array.isArray(msg.content)) {
+      return {
+        ...msg,
+        content: getMessageDisplay(msg)
+      };
+    }
+    return msg;
+  }
+
+  function saveSessions() {
+    if (!sessionsData) return;
+    const snapshot = {
+      activeId: sessionsData.activeId,
+      sessions: sessionsData.sessions.map((session) => ({
+        ...session,
+        messages: Array.isArray(session.messages) ? session.messages.map(serializeMessage) : []
+      }))
+    };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+    } catch (e) {
+      toast('会话保存失败，可能是浏览器存储空间不足', 'error');
+    }
+  }
+
+  function getActiveSession() {
+    if (!sessionsData) return null;
+    return sessionsData.sessions.find((s) => s.id === sessionsData.activeId) || null;
+  }
+
+  function trimMessageHistory(maxCount = MAX_CONTEXT_MESSAGES) {
+    if (!maxCount || maxCount <= 0) return;
+    if (messageHistory.length <= maxCount) return;
+    messageHistory = messageHistory.slice(-maxCount);
+    const session = getActiveSession();
+    if (session) {
+      session.messages = messageHistory.slice();
+      session.updatedAt = Date.now();
+      saveSessions();
+      renderSessionList();
+    }
+  }
+
+  function restoreActiveSession() {
+    const session = getActiveSession();
+    if (!session) return;
+    messageHistory = Array.isArray(session.messages) ? session.messages.slice() : [];
+    trimMessageHistory();
+    if (chatLog) chatLog.innerHTML = '';
+    if (!messageHistory.length) {
+      showEmptyState();
+      return;
+    }
+    hideEmptyState();
+    for (const msg of messageHistory) {
+      const text = getMessageDisplay(msg);
+      const entry = createMessage(msg.role, text);
+      if (entry && msg.role === 'assistant') {
+        updateMessage(entry, text, true);
+      }
+    }
+    if (activeStreamInfo && activeStreamInfo.sessionId === session.id && activeStreamInfo.entry.row) {
+      chatLog.appendChild(activeStreamInfo.entry.row);
+    }
+    scrollToBottom();
+  }
+
+  function syncCurrentSession() {
+    const session = getActiveSession();
+    if (!session) return;
+    session.messages = messageHistory.slice();
+    session.updatedAt = Date.now();
+  }
+
+  function updateSessionTitle(session) {
+    if (!session || session.isDefaultTitle === false) return;
+    const firstUser = session.messages.find((m) => m.role === 'user');
+    if (!firstUser) return;
+    const text = getMessageDisplay(firstUser);
+    if (!text) return;
+    const title = text.replace(/\n/g, ' ').trim().slice(0, 20);
+    if (title) {
+      session.title = title;
+      session.isDefaultTitle = false;
+    }
+  }
+
+  function renameSession(id, newTitle) {
+    if (!sessionsData) return;
+    const session = sessionsData.sessions.find((s) => s.id === id);
+    if (!session) return;
+    const trimmed = (newTitle || '').trim();
+    session.title = trimmed || '新会话';
+    session.isDefaultTitle = !trimmed && isDefaultTitleValue(session.title);
+    session.updatedAt = Date.now();
+    saveSessions();
+    renderSessionList();
+  }
+
+  function startRenameSession(sessionId, titleSpan) {
+    if (!sessionsData) return;
+    const session = sessionsData.sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'session-rename-input';
+    input.value = session.title || '';
+    input.maxLength = 40;
+    titleSpan.replaceWith(input);
+    input.focus();
+    input.select();
+    const commit = () => renameSession(sessionId, input.value);
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        input.blur();
+      }
+      if (e.key === 'Escape') {
+        input.value = session.title || '新会话';
+        input.blur();
+      }
+    });
+  }
+
+  function syncSessionModel() {
+    const session = getActiveSession();
+    if (!session) return;
+    session.model = (modelSelect && modelSelect.value) || '';
+  }
+
+  function restoreSessionModel() {
+    const session = getActiveSession();
+    if (!session || !session.model || !Array.isArray(availableModels)) return;
+    if (availableModels.includes(session.model)) {
+      setModelValue(session.model);
+    }
+  }
+
+  function renderSessionList() {
+    if (!sessionListEl || !sessionsData) return;
+    sessionListEl.innerHTML = '';
+    for (const session of sessionsData.sessions) {
+      const item = document.createElement('div');
+      item.className = `session-item${session.id === sessionsData.activeId ? ' active' : ''}`;
+      item.dataset.id = session.id;
+
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'session-title';
+      titleSpan.textContent = session.title || '新会话';
+      titleSpan.title = titleSpan.textContent;
+      titleSpan.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        startRenameSession(session.id, titleSpan);
+      });
+      item.appendChild(titleSpan);
+
+      if (session.unread && session.id !== sessionsData.activeId) {
+        const dot = document.createElement('span');
+        dot.className = 'session-unread';
+        item.appendChild(dot);
+      }
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'session-delete';
+      delBtn.title = '删除';
+      delBtn.textContent = '×';
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        deleteSession(session.id);
+      });
+      item.appendChild(delBtn);
+
+      item.addEventListener('click', () => switchSession(session.id));
+      sessionListEl.appendChild(item);
+    }
+  }
+
+  function createSession() {
+    if (!sessionsData) return;
+    const id = generateId();
+    const session = {
+      id,
+      title: '新会话',
+      isDefaultTitle: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: []
+    };
+    sessionsData.sessions.unshift(session);
+    sessionsData.activeId = id;
+    messageHistory = [];
+    if (chatLog) chatLog.innerHTML = '';
+    showEmptyState();
+    saveSessions();
+    renderSessionList();
+    if (isMobileSidebar()) closeSidebar();
+  }
+
+  function deleteSession(id) {
+    if (!sessionsData) return;
+    const idx = sessionsData.sessions.findIndex((s) => s.id === id);
+    if (idx === -1) return;
+    sessionsData.sessions.splice(idx, 1);
+    if (!sessionsData.sessions.length) {
+      createSession();
+      return;
+    }
+    if (sessionsData.activeId === id) {
+      const newIdx = Math.min(idx, sessionsData.sessions.length - 1);
+      sessionsData.activeId = sessionsData.sessions[newIdx].id;
+      restoreActiveSession();
+      restoreSessionModel();
+    }
+    saveSessions();
+    renderSessionList();
+  }
+
+  function switchSession(id) {
+    if (!sessionsData || sessionsData.activeId === id) return;
+    syncCurrentSession();
+    syncSessionModel();
+    sessionsData.activeId = id;
+    const target = getActiveSession();
+    if (target) target.unread = false;
+    restoreActiveSession();
+    restoreSessionModel();
+    saveSessions();
+    renderSessionList();
+    if (isMobileSidebar()) closeSidebar();
+  }
+
+  function isMobileSidebar() {
+    return window.matchMedia('(max-width: 1024px)').matches;
+  }
+
+  function setSidebarCollapsed(collapsed) {
+    const layout = chatSidebar ? chatSidebar.closest('.chat-layout') : null;
+    if (!layout) return;
+    layout.classList.toggle('collapsed', collapsed);
+    try {
+      localStorage.setItem(SIDEBAR_STATE_KEY, collapsed ? '1' : '0');
+    } catch (e) {
+      // ignore storage errors
+    }
+  }
+
+  function openSidebar() {
+    if (isMobileSidebar()) {
+      if (chatSidebar) chatSidebar.classList.add('open');
+      if (sidebarOverlay) sidebarOverlay.classList.add('open');
+      return;
+    }
+    setSidebarCollapsed(false);
+  }
+
+  function closeSidebar() {
+    if (isMobileSidebar()) {
+      if (chatSidebar) chatSidebar.classList.remove('open');
+      if (sidebarOverlay) sidebarOverlay.classList.remove('open');
+      return;
+    }
+    setSidebarCollapsed(true);
+  }
+
+  function toggleSidebar() {
+    if (isMobileSidebar()) {
+      if (chatSidebar && chatSidebar.classList.contains('open')) {
+        closeSidebar();
+      } else {
+        openSidebar();
+      }
+      return;
+    }
+    const layout = chatSidebar ? chatSidebar.closest('.chat-layout') : null;
+    if (!layout) return;
+    setSidebarCollapsed(!layout.classList.contains('collapsed'));
+  }
+
+  function restoreSidebarState() {
+    try {
+      const raw = localStorage.getItem(SIDEBAR_STATE_KEY);
+      setSidebarCollapsed(raw === '1');
+    } catch (e) {
+      // ignore storage errors
+    }
+  }
+
+  function loadSessions() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        sessionsData = JSON.parse(raw);
+        if (!sessionsData || !Array.isArray(sessionsData.sessions)) {
+          sessionsData = null;
+        }
+      }
+    } catch (e) {
+      sessionsData = null;
+    }
+    if (!sessionsData || !sessionsData.sessions.length) {
+      const id = generateId();
+      sessionsData = {
+        activeId: id,
+        sessions: [{
+          id,
+          title: '新会话',
+          isDefaultTitle: true,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: []
+        }]
+      };
+      saveSessions();
+    }
+    sessionsData.sessions.forEach((session) => {
+      if (session && typeof session.isDefaultTitle === 'undefined') {
+        session.isDefaultTitle = isDefaultTitleValue(session.title);
+      }
+      if (!Array.isArray(session.messages)) {
+        session.messages = [];
+      }
+    });
+    if (!sessionsData.activeId || !sessionsData.sessions.find((s) => s.id === sessionsData.activeId)) {
+      sessionsData.activeId = sessionsData.sessions[0].id;
+    }
+    restoreActiveSession();
+    restoreSessionModel();
+    renderSessionList();
+  }
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
@@ -351,16 +728,29 @@
     return parts;
   }
 
-  function parseRolloutBlocks(text) {
+  function parseRolloutBlocks(text, defaultId = 'General') {
     const lines = (text || '').split(/\r?\n/);
     const blocks = [];
     let current = null;
     for (const line of lines) {
-      const match = line.match(/^\s*\[([^\]]+)\]\[([^\]]+)\]\s*(.*)$/);
-      if (match) {
+      const matchDouble = line.match(/^\s*\[([^\]]+)\]\[([^\]]+)\]\s*(.*)$/);
+      if (matchDouble) {
         if (current) blocks.push(current);
-        current = { id: match[1], type: match[2], lines: [] };
-        if (match[3]) current.lines.push(match[3]);
+        current = { id: matchDouble[1], type: matchDouble[2], lines: [] };
+        if (matchDouble[3]) current.lines.push(matchDouble[3]);
+        continue;
+      }
+      const matchSingle = line.match(/^\s*\[([^\]]+)\]\s*(.*)$/);
+      if (matchSingle) {
+        const maybeType = String(matchSingle[1] || '').trim();
+        if (/^(WebSearch|SearchImage|AgentThink)$/i.test(maybeType)) {
+          if (current) blocks.push(current);
+          current = { id: defaultId || 'General', type: maybeType, lines: [] };
+          if (matchSingle[2]) current.lines.push(matchSingle[2]);
+          continue;
+        }
+      }
+      if (current && /^\s*\[[^\]]+\]\s*$/.test(line)) {
         continue;
       }
       if (current) {
@@ -382,7 +772,7 @@
         current.lines.push(line);
         continue;
       }
-      const agentMatch = trimmed.match(/^(Grok\\s+Leader|Agent\\s*\\d+|Grok\\s+Agent\\s*\\d+)$/i);
+      const agentMatch = trimmed.match(/^(Grok\s+Leader|(?:Grok\s+)?Agent\s*\d+)$/i);
       if (agentMatch) {
         hasAgentHeading = true;
         if (current.lines.length) {
@@ -400,6 +790,44 @@
       return [{ title: null, lines }];
     }
     return sections;
+  }
+
+  function splitBlocksIntoSyntheticAgents(blocks) {
+    const list = Array.isArray(blocks) ? blocks : [];
+    if (!list.length) return [];
+
+    const ids = Array.from(new Set(list.map((b) => String(b.id || '').trim()).filter(Boolean)));
+    const nonGeneralIds = ids.filter((id) => !/^general$/i.test(id));
+
+    if (nonGeneralIds.length <= 1) {
+      return [];
+    }
+    const groups = [];
+    const map = new Map();
+    for (const block of list) {
+      const key = String(block.id || 'General');
+      let group = map.get(key);
+      if (!group) {
+        group = { key, blocks: [] };
+        map.set(key, group);
+        groups.push(group);
+      }
+      group.blocks.push(block);
+    }
+    return groups.map((group, idx) => ({
+      title: idx === 0 ? 'Grok Leader' : `Agent ${idx}`,
+      blocks: group.blocks
+    }));
+  }
+
+  function renderFlatBlocks(blocks) {
+    return (Array.isArray(blocks) ? blocks : []).map((item) => {
+      const body = renderBasicMarkdown((item.lines || []).join('\n').trim());
+      const typeText = escapeHtml(item.type);
+      const typeKey = String(item.type || '').trim().toLowerCase().replace(/\s+/g, '');
+      const typeAttr = escapeHtml(typeKey);
+      return `<div class="think-item-row"><div class="think-item-type" data-type="${typeAttr}">${typeText}</div><div class="think-item-body">${body || '<em>（空）</em>'}</div></div>`;
+    }).join('');
   }
 
   function renderThinkContent(text, openAll) {
@@ -435,10 +863,21 @@
     };
 
     const agentBlocks = sections.map((section, idx) => {
-      const blocks = parseRolloutBlocks(section.lines.join('\n'));
+      const blocks = parseRolloutBlocks(section.lines.join('\n'), section.title || 'General');
+      if (!section.title && blocks.length) {
+        const synthetic = splitBlocksIntoSyntheticAgents(blocks);
+        if (synthetic.length) {
+          return synthetic.map((agent, agentIdx) => {
+            const inner = renderFlatBlocks(agent.blocks);
+            const title = escapeHtml(agent.title);
+            const openAttr = openAll ? ' open' : (idx === 0 && agentIdx === 0 ? ' open' : '');
+            return `<details class="think-agent"${openAttr}><summary>${title}</summary><div class="think-agent-items">${inner}</div></details>`;
+          }).join('');
+        }
+      }
       const inner = blocks.length
         ? renderGroups(blocks, openAll)
-        : `<div class="think-rollout-body">${renderBasicMarkdown(section.lines.join('\\n').trim())}</div>`;
+        : `<div class="think-rollout-body">${renderBasicMarkdown(section.lines.join('\n').trim())}</div>`;
       if (!section.title) {
         return `<div class="think-agent-items">${inner}</div>`;
       }
@@ -675,6 +1114,27 @@
     if (!entry) return;
     entry.raw = content || '';
     if (!entry.contentNode) return;
+    const captureOpenState = (root, selector) => {
+      if (!root || !root.querySelectorAll) return null;
+      const nodes = Array.from(root.querySelectorAll(selector));
+      if (!nodes.length) return null;
+      return nodes.map((node) => node.hasAttribute('open'));
+    };
+    const restoreOpenState = (root, selector, states) => {
+      if (!root || !root.querySelectorAll || !Array.isArray(states) || !states.length) return;
+      const nodes = Array.from(root.querySelectorAll(selector));
+      const max = Math.min(nodes.length, states.length);
+      for (let i = 0; i < max; i += 1) {
+        if (states[i]) {
+          nodes[i].setAttribute('open', '');
+        } else {
+          nodes[i].removeAttribute('open');
+        }
+      }
+    };
+    const savedThinkBlockState = captureOpenState(entry.contentNode, '.think-block');
+    const savedThinkAgentState = captureOpenState(entry.contentNode, '.think-agent');
+    const savedRolloutState = captureOpenState(entry.contentNode, '.think-rollout-group');
     if (!entry.hasThink && entry.raw.includes('<think>')) {
       entry.hasThink = true;
     }
@@ -688,7 +1148,13 @@
         entry.contentNode.textContent = entry.raw;
       }
     }
+    restoreOpenState(entry.contentNode, '.think-block', savedThinkBlockState);
+    restoreOpenState(entry.contentNode, '.think-agent', savedThinkAgentState);
+    restoreOpenState(entry.contentNode, '.think-rollout-group', savedRolloutState);
     if (entry.hasThink) {
+      if (finalize && (entry.thinkElapsed === null || typeof entry.thinkElapsed === 'undefined')) {
+        entry.thinkElapsed = 0;
+      }
       updateThinkSummary(entry, entry.thinkElapsed);
     }
     if (entry.role === 'assistant' || entry.role === 'user') {
@@ -836,6 +1302,11 @@
         node.classList.toggle('active', node.dataset.value === modelId);
       });
     }
+    if (sessionsData) {
+      syncSessionModel();
+      saveSessions();
+      renderSessionList();
+    }
   }
 
   function renderModelOptions(models) {
@@ -904,6 +1375,7 @@
     } else {
       setModelValue(list[list.length - 1] || preferred);
     }
+    restoreSessionModel();
   }
 
   function showAttachmentBadge() {
@@ -1171,6 +1643,7 @@
       return;
     }
     const historySlice = messageHistory.slice(0, lastUserIndex + 1);
+    const retrySessionId = sessionsData ? sessionsData.activeId : null;
     const assistantEntry = createMessage('assistant', '');
     setSendingState(true);
     setStatus('connecting', '发送中');
@@ -1198,14 +1671,18 @@
         throw new Error(`请求失败: ${res.status}`);
       }
 
-      await handleStream(res, assistantEntry);
+      await handleStream(res, assistantEntry, retrySessionId);
       setStatus('connected', '完成');
     } catch (e) {
       if (e && e.name === 'AbortError') {
         updateMessage(assistantEntry, assistantEntry.raw || '已中止', true);
         if (!assistantEntry.committed) {
-          messageHistory.push({ role: 'assistant', content: assistantEntry.raw || '' });
           assistantEntry.committed = true;
+          if (retrySessionId) {
+            commitToSession(retrySessionId, assistantEntry.raw || '');
+          } else {
+            messageHistory.push({ role: 'assistant', content: assistantEntry.raw || '' });
+          }
         }
         setStatus('error', '已中止');
       } else {
@@ -1245,9 +1722,16 @@
     }
 
     messageHistory.push({ role: 'user', content });
+    trimMessageHistory();
     if (promptInput) promptInput.value = '';
     clearAttachment();
+    syncCurrentSession();
+    syncSessionModel();
+    updateSessionTitle(getActiveSession());
+    saveSessions();
+    renderSessionList();
 
+    const sendSessionId = sessionsData ? sessionsData.activeId : null;
     const assistantEntry = createMessage('assistant', '');
     setSendingState(true);
     setStatus('connecting', '发送中');
@@ -1275,7 +1759,7 @@
         throw new Error(`请求失败: ${res.status}`);
       }
 
-      await handleStream(res, assistantEntry);
+      await handleStream(res, assistantEntry, sendSessionId);
       setStatus('connected', '完成');
     } catch (e) {
       if (e && e.name === 'AbortError') {
@@ -1286,8 +1770,12 @@
         }
         setStatus('error', '已中止');
         if (!assistantEntry.committed) {
-          messageHistory.push({ role: 'assistant', content: assistantEntry.raw || '' });
           assistantEntry.committed = true;
+          if (sendSessionId) {
+            commitToSession(sendSessionId, assistantEntry.raw || '');
+          } else {
+            messageHistory.push({ role: 'assistant', content: assistantEntry.raw || '' });
+          }
         }
       } else {
         updateMessage(assistantEntry, `请求失败: ${e.message || e}`, true);
@@ -1301,12 +1789,33 @@
     }
   }
 
-  async function handleStream(res, assistantEntry) {
+  function commitToSession(sessionId, assistantText) {
+    if (!sessionId || !sessionsData) return;
+    const session = sessionsData.sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.messages.push({ role: 'assistant', content: assistantText });
+    if (session.messages.length > MAX_CONTEXT_MESSAGES) {
+      session.messages = session.messages.slice(-MAX_CONTEXT_MESSAGES);
+    }
+    session.updatedAt = Date.now();
+    updateSessionTitle(session);
+    if (sessionsData.activeId === sessionId) {
+      messageHistory = session.messages.slice();
+      trimMessageHistory();
+    } else {
+      session.unread = true;
+    }
+    saveSessions();
+    renderSessionList();
+  }
+
+  async function handleStream(res, assistantEntry, targetSessionId = null) {
+    activeStreamInfo = { sessionId: targetSessionId, entry: assistantEntry };
     const reader = res.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
     let assistantText = '';
-
+    try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -1326,8 +1835,12 @@
               const elapsed = assistantEntry.thinkElapsed || Math.max(1, Math.round((Date.now() - assistantEntry.startedAt) / 1000));
               updateThinkSummary(assistantEntry, elapsed);
             }
-            messageHistory.push({ role: 'assistant', content: assistantText });
             assistantEntry.committed = true;
+            if (targetSessionId) {
+              commitToSession(targetSessionId, assistantText);
+            } else {
+              messageHistory.push({ role: 'assistant', content: assistantText });
+            }
             return;
           }
           try {
@@ -1345,7 +1858,9 @@
                 assistantEntry.thinkElapsed = null;
                 updateThinkSummary(assistantEntry, null);
               }
-              updateMessage(assistantEntry, assistantText, false);
+              if (!targetSessionId || (sessionsData && sessionsData.activeId === targetSessionId)) {
+                updateMessage(assistantEntry, assistantText, false);
+              }
             }
           } catch (e) {
             // ignore parse errors
@@ -1358,8 +1873,15 @@
       const elapsed = assistantEntry.thinkElapsed || Math.max(1, Math.round((Date.now() - assistantEntry.startedAt) / 1000));
       updateThinkSummary(assistantEntry, elapsed);
     }
-    messageHistory.push({ role: 'assistant', content: assistantText });
     assistantEntry.committed = true;
+    if (targetSessionId) {
+      commitToSession(targetSessionId, assistantText);
+    } else {
+      messageHistory.push({ role: 'assistant', content: assistantText });
+    }
+    } finally {
+      activeStreamInfo = null;
+    }
   }
 
   function toggleSettings(show) {
@@ -1486,6 +2008,21 @@
         openAttachmentPreview(item.data, item.name);
       });
     }
+    if (newChatBtn) {
+      newChatBtn.addEventListener('click', createSession);
+    }
+    if (collapseSidebarBtn) {
+      collapseSidebarBtn.addEventListener('click', toggleSidebar);
+    }
+    if (sidebarExpandBtn) {
+      sidebarExpandBtn.addEventListener('click', openSidebar);
+    }
+    if (sidebarToggle) {
+      sidebarToggle.addEventListener('click', toggleSidebar);
+    }
+    if (sidebarOverlay) {
+      sidebarOverlay.addEventListener('click', closeSidebar);
+    }
 
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
@@ -1558,8 +2095,10 @@
 
   updateRangeValues();
   setSendingState(false);
-  loadModels();
   bindEvents();
+  restoreSidebarState();
+  loadSessions();
+  loadModels();
 })();
 
 

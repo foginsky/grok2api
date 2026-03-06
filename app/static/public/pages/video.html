@@ -3,7 +3,8 @@
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content">
   <title>Grok2API - Video 视频工作台</title>
   <link rel="icon" href="/static/common/img/favicon/favicon.ico">
   <link rel="manifest" href="/manifest.webmanifest">
@@ -42,80 +43,81 @@
           <div class="video-card">
             <div class="card-title">生成设置</div>
             <div class="settings-grid">
-            <div class="settings-block prompt-block">
-              <label class="field-label" for="promptInput">提示词</label>
-              <textarea id="promptInput" class="geist-input video-textarea" placeholder="例如：街头霓虹雨夜，慢镜头，胶片质感"></textarea>
-            </div>
-            <div id="refDropZone" class="settings-block ref-block">
-              <label class="field-label" for="imageUrlInput">参考图</label>
-              <div class="ref-controls">
-                <input id="imageUrlInput" class="geist-input" placeholder="https://... 或 data:image/...">
+              <div class="settings-block prompt-block">
+                <label class="field-label" for="promptInput">提示词</label>
+                <textarea id="promptInput" class="geist-input video-textarea"
+                  placeholder="例如：街头霓虹雨夜，慢镜头，胶片质感"></textarea>
               </div>
-              <div class="ref-meta">
-                <span id="imageFileName" class="ref-name">未选择文件</span>
-                <span class="ref-drop-hint">支持拖拽/粘贴图片</span>
+              <div id="refDropZone" class="settings-block ref-block">
+                <label class="field-label" for="imageUrlInput">参考图</label>
+                <div class="ref-controls">
+                  <input id="imageUrlInput" class="geist-input" placeholder="https://... 或 data:image/...">
+                </div>
+                <div class="ref-meta">
+                  <span id="imageFileName" class="ref-name">未选择文件</span>
+                  <span class="ref-drop-hint">支持拖拽/粘贴图片</span>
+                </div>
+                <div class="ref-parent-row">
+                  <input id="parentPostInput" class="geist-input" placeholder="粘贴 parentPostId（全局记忆）">
+                  <button id="applyParentBtn" class="geist-button-outline text-xs px-3" type="button">使用ID</button>
+                </div>
+                <div id="referencePreview" class="ref-preview hidden">
+                  <img id="referencePreviewImg" class="ref-preview-image" alt="参考图预览">
+                  <div id="referencePreviewMeta" class="ref-preview-meta"></div>
+                </div>
               </div>
-              <div class="ref-parent-row">
-                <input id="parentPostInput" class="geist-input" placeholder="粘贴 parentPostId（全局记忆）">
-                <button id="applyParentBtn" class="geist-button-outline text-xs px-3" type="button">使用ID</button>
+              <div class="settings-block ratio-block">
+                <label class="field-label" for="ratioSelect">画面比例</label>
+                <select id="ratioSelect" class="geist-input">
+                  <option value="3:2" selected>3:2 横构图</option>
+                  <option value="2:3">2:3 竖构图</option>
+                  <option value="16:9">16:9 宽屏</option>
+                  <option value="9:16">9:16 竖屏</option>
+                  <option value="1:1">1:1 方形</option>
+                </select>
               </div>
-              <div id="referencePreview" class="ref-preview hidden">
-                <img id="referencePreviewImg" class="ref-preview-image" alt="参考图预览">
-                <div id="referencePreviewMeta" class="ref-preview-meta"></div>
+              <div class="settings-block length-block">
+                <label class="field-label" for="lengthSelect">视频时长</label>
+                <select id="lengthSelect" class="geist-input">
+                  <option value="6" selected>6 秒</option>
+                  <option value="10">10 秒</option>
+                  <option value="15">15 秒</option>
+                </select>
               </div>
-            </div>
-            <div class="settings-block ratio-block">
-              <label class="field-label" for="ratioSelect">画面比例</label>
-              <select id="ratioSelect" class="geist-input">
-                <option value="3:2" selected>3:2 横构图</option>
-                <option value="2:3">2:3 竖构图</option>
-                <option value="16:9">16:9 宽屏</option>
-                <option value="9:16">9:16 竖屏</option>
-                <option value="1:1">1:1 方形</option>
-              </select>
-            </div>
-            <div class="settings-block length-block">
-              <label class="field-label" for="lengthSelect">视频时长</label>
-              <select id="lengthSelect" class="geist-input">
-                <option value="6" selected>6 秒</option>
-                <option value="10">10 秒</option>
-                <option value="15">15 秒</option>
-              </select>
-            </div>
-            <div class="settings-block resolution-block">
-              <label class="field-label" for="resolutionSelect">分辨率</label>
-              <select id="resolutionSelect" class="geist-input">
-                <option value="480p" selected>480p</option>
-                <option value="720p">720p</option>
-              </select>
-            </div>
-            <div class="settings-block preset-block">
-              <label class="field-label" for="presetSelect">风格预设</label>
-              <select id="presetSelect" class="geist-input">
-                <option value="normal" selected>Normal</option>
-                <option value="fun">Fun</option>
-                <option value="spicy">Spicy</option>
-                <option value="custom">Custom</option>
-              </select>
-            </div>
-            <div class="settings-block concurrent-block">
-              <label class="field-label" for="concurrentSelect">并发视频数</label>
-              <select id="concurrentSelect" class="geist-input">
-                <option value="1" selected>1 路</option>
-                <option value="2">2 路</option>
-                <option value="3">3 路</option>
-                <option value="4">4 路</option>
-              </select>
-            </div>
-            <div class="settings-block upload-block">
-              <label class="field-label">&nbsp;</label>
-              <button id="selectImageFileBtn" class="geist-button-outline text-xs px-3" type="button">上传</button>
-              <input id="imageFileInput" class="ref-file-input" type="file" accept="image/*">
-            </div>
-            <div class="settings-block clear-block">
-              <label class="field-label">&nbsp;</label>
-              <button id="clearImageFileBtn" class="geist-button-outline text-xs px-3" type="button">清除</button>
-            </div>
+              <div class="settings-block resolution-block">
+                <label class="field-label" for="resolutionSelect">分辨率</label>
+                <select id="resolutionSelect" class="geist-input">
+                  <option value="480p" selected>480p</option>
+                  <option value="720p">720p</option>
+                </select>
+              </div>
+              <div class="settings-block preset-block">
+                <label class="field-label" for="presetSelect">风格预设</label>
+                <select id="presetSelect" class="geist-input">
+                  <option value="normal" selected>Normal</option>
+                  <option value="fun">Fun</option>
+                  <option value="spicy">Spicy</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div class="settings-block concurrent-block">
+                <label class="field-label" for="concurrentSelect">并发视频数</label>
+                <select id="concurrentSelect" class="geist-input">
+                  <option value="1" selected>1 路</option>
+                  <option value="2">2 路</option>
+                  <option value="3">3 路</option>
+                  <option value="4">4 路</option>
+                </select>
+              </div>
+              <div class="settings-block upload-block">
+                <label class="field-label">&nbsp;</label>
+                <button id="selectImageFileBtn" class="geist-button-outline text-xs px-3" type="button">上传</button>
+                <input id="imageFileInput" class="ref-file-input" type="file" accept="image/*">
+              </div>
+              <div class="settings-block clear-block">
+                <label class="field-label">&nbsp;</label>
+                <button id="clearImageFileBtn" class="geist-button-outline text-xs px-3" type="button">清除</button>
+              </div>
             </div>
             <div class="settings-actions">
               <button id="startBtn" class="geist-button gap-2">
@@ -136,7 +138,7 @@
           </div>
           <div id="editPanel" class="video-card edit-panel">
             <div class="video-preview-header">
-              <div class="card-title">视频工作区</div>
+              <div class="card-title">视频延长工作区</div>
               <div class="preview-actions">
                 <button id="pickCachedVideoBtn" class="geist-button-outline text-xs px-3">选择视频</button>
                 <button id="uploadWorkVideoBtn" class="geist-button-outline text-xs px-3" type="button">上传视频</button>
@@ -147,77 +149,54 @@
             <div id="editHint" class="video-empty">请先选择或生成一个视频，工作区会始终展示当前视频。</div>
             <div id="editBody">
               <div class="meta-grid edit-meta-grid">
-                <div class="meta-item"><div class="meta-label">当前工作视频</div><div id="mergeVideoA" class="meta-value">-</div></div>
-                <div class="meta-item"><div class="meta-label">历史数量</div><div id="historyCount" class="meta-value">0</div></div>
+                <div class="meta-item">
+                  <div class="meta-label">当前工作视频</div>
+                  <div id="mergeVideoA" class="meta-value">-</div>
+                </div>
+                <div class="meta-item">
+                  <div class="meta-label">历史数量</div>
+                  <div id="historyCount" class="meta-value">0</div>
+                </div>
               </div>
               <div class="edit-preview-wrap">
                 <video id="editVideo" controls preload="metadata" playsinline webkit-playsinline></video>
               </div>
               <div class="edit-slider-wrap">
-                <input id="editTimeline" class="timeline-delete-zone" data-delete-side="right" type="range" min="0" max="100000" step="1" value="0">
+                <input id="editTimeline" class="timeline-delete-zone" data-delete-side="right" type="range" min="0"
+                  max="100000" step="1" value="0">
                 <div class="progress-meta">
                   <span id="editTimeText">00:00.000</span>
                   <span id="editDurationText">总时长 -</span>
                 </div>
               </div>
               <div class="meta-grid edit-meta-grid">
-                <div class="meta-item"><div class="meta-label">frame_index</div><div id="editFrameIndex" class="meta-value">-</div></div>
-                <div class="meta-item"><div class="meta-label">timestamp_ms</div><div id="editTimestampMs" class="meta-value">-</div></div>
-                <div class="meta-item"><div class="meta-label">frame_hash</div><div id="editFrameHash" class="meta-value">-</div></div>
-                <div class="meta-item"><div class="meta-label">视频2(B)</div><div id="mergeVideoB" class="meta-value">-</div></div>
+                <div class="meta-item">
+                  <div class="meta-label">frame_index</div>
+                  <div id="editFrameIndex" class="meta-value">-</div>
+                </div>
+                <div class="meta-item">
+                  <div class="meta-label">timestamp_ms</div>
+                  <div id="editTimestampMs" class="meta-value">-</div>
+                </div>
+                <div class="meta-item">
+                  <div class="meta-label">extend_post_id</div>
+                  <div id="editExtendPostId" class="meta-value">-</div>
+                </div>
               </div>
               <div class="settings-block prompt-block edit-prompt-block">
-                <label class="field-label" for="editPromptInput">拼接提示词</label>
-                <textarea id="editPromptInput" class="geist-input video-textarea" placeholder="描述后续要拼接的画面内容"></textarea>
+                <label class="field-label" for="editPromptInput">延长提示词</label>
+                <textarea id="editPromptInput" class="geist-input video-textarea"
+                  placeholder="描述后续要延长的画面内容（留空则自然延续）"></textarea>
               </div>
               <div class="preview-actions splice-action-row">
                 <button id="spliceBtn" class="geist-button gap-2">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M11 4H6a2 2 0 0 0-2 2v5" />
-                    <path d="M13 20h5a2 2 0 0 0 2-2v-5" />
-                    <path d="M20 6l-8 8" />
-                    <path d="M4 18l8-8" />
+                    <path d="M5 12h14" />
+                    <path d="M12 5v14" />
                   </svg>
-                  <span>拼接视频</span>
+                  <span>延长视频</span>
                 </button>
-              </div>
-              <div class="video-card manual-merge-card">
-                <div class="video-preview-header">
-                  <div class="card-title">手动两段拼接</div>
-                  <div class="preview-actions">
-                    <button id="pickMergeVideoBtn" class="geist-button-outline text-xs px-3" type="button">选择视频2</button>
-                    <button id="directMergeBtn" class="geist-button-outline text-xs px-3" type="button">手动拼接</button>
-                  </div>
-                </div>
-                <div class="manual-merge-grid">
-                  <div class="manual-merge-col">
-                    <div class="meta-label">视频1拼接帧（向左保留）</div>
-                    <div class="edit-preview-wrap">
-                      <video id="mergeVideoPreviewA" controls preload="metadata" playsinline webkit-playsinline></video>
-                    </div>
-                    <div class="edit-slider-wrap">
-                      <input id="mergeTimelineA" class="timeline-delete-zone" data-delete-side="right" type="range" min="0" max="100000" step="1" value="0">
-                      <div class="progress-meta">
-                        <span id="mergeTimeTextA">00:00.000</span>
-                        <span id="mergeDurationA">总时长 -</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="manual-merge-col">
-                    <div class="meta-label">视频2拼接帧（向右保留）</div>
-                    <div class="edit-preview-wrap">
-                      <video id="mergeVideoPreviewB" controls preload="metadata" playsinline webkit-playsinline></video>
-                    </div>
-                    <div class="edit-slider-wrap">
-                      <input id="mergeTimelineB" class="timeline-delete-zone" data-delete-side="left" type="range" min="0" max="100000" step="1" value="0">
-                      <div class="progress-meta">
-                        <span id="mergeTimeTextB">00:00.000</span>
-                        <span id="mergeDurationB">总时长 -</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
               </div>
             </div>
           </div>
@@ -266,7 +245,7 @@
             <div class="panel-head">
               <div class="card-title">历史视频</div>
             </div>
-            <div id="videoEmpty" class="video-empty">生成视频与拼接视频都会在这里保存，点击可替换到工作区。</div>
+            <div id="videoEmpty" class="video-empty">生成视频与延长视频都会在这里保存，点击可替换到工作区。</div>
             <div id="videoStage" class="video-stage hidden"></div>
           </aside>
         </aside>
@@ -298,9 +277,7 @@
   <script src="/static/common/js/toast.js"></script>
   <script src="/static/common/js/prompt-enhancer.js?v=0.1.15"></script>
   <script src="/static/common/js/pwa.js?v=0.1.1"></script>
-  <script src="/static/vendor/ffmpeg/ffmpeg.js?v=0.1.0"></script>
-  <script src="/static/vendor/ffmpeg/ffmpeg-util.js?v=0.1.0"></script>
-  <script src="/static/public/js/video.js?v=0.5.42"></script>
+  <script src="/static/public/js/video.js?v=0.6.0"></script>
 </body>
 
 </html>

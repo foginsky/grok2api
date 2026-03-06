@@ -168,6 +168,17 @@ class VideoService:
         return True
 
     @staticmethod
+    def _map_preset_to_mode(preset: str) -> str:
+        """将前端预设名映射为 Grok 官方 mode 参数。"""
+        mapping = {
+            "spicy": "extremely-spicy-or-crazy",
+            "fun": "extremely-crazy",
+            "normal": "normal",
+        }
+        # 如果预设没发送，默认 --mode=extremely-spicy-or-crazy (即 spicy)
+        return mapping.get(preset, "extremely-spicy-or-crazy")
+
+    @staticmethod
     def _build_video_message(
         prompt: str,
         preset: str = "normal",
@@ -175,18 +186,22 @@ class VideoService:
     ) -> str:
         """构造视频请求 message：
         - 有提示词：统一走 custom，并发送 image_url + prompt + mode
-        - 无提示词：统一走 spicy（忽略 preset）
+        - 无提示词：根据所选 preset 转换 mode
         """
         prompt_text = (prompt or "").strip()
         if not VideoService.is_meaningful_video_prompt(prompt_text):
             prompt_text = ""
+
         image_core = (source_image_url or "").strip()
         if prompt_text:
+            mode_flag = "--mode=custom"
             if image_core:
-                return f"{image_core}  {prompt_text} --mode=custom"
-            return f"{prompt_text} --mode=custom"
+                return f"{image_core}  {prompt_text} {mode_flag}"
+            return f"{prompt_text} {mode_flag}"
 
-        mode_flag = "--mode=extremely-spicy-or-crazy"
+        # 无提示词（或泛化指令）
+        official_mode = VideoService._map_preset_to_mode(preset)
+        mode_flag = f"--mode={official_mode}"
         if image_core:
             return f"{image_core}  {mode_flag}"
         return mode_flag
@@ -269,13 +284,12 @@ class VideoService:
     ) -> AsyncGenerator[bytes, None]:
         """Generate video."""
         token_tag = _token_tag(token)
-        mode = (
-            "custom"
-            if VideoService.is_meaningful_video_prompt(prompt)
-            else "extremely-spicy-or-crazy"
-        )
+        # 确定逻辑上的 mode
+        is_custom = VideoService.is_meaningful_video_prompt(prompt)
+        official_mode = "custom" if is_custom else VideoService._map_preset_to_mode(preset)
+
         logger.info(
-            f"Video generation: token={token_tag}, prompt='{prompt[:50]}...', ratio={aspect_ratio}, length={video_length}s, mode={mode}"
+            f"Video generation: token={token_tag}, prompt='{prompt[:50]}...', ratio={aspect_ratio}, length={video_length}s, mode={official_mode}"
         )
         post_id = await self.create_post(token, prompt)
         message = self._build_video_message(prompt=prompt, preset=preset)
@@ -303,6 +317,7 @@ class VideoService:
                             token,
                             message=message,
                             model="grok-3",
+                            mode=official_mode,
                             tool_overrides={"videoGen": True},
                             model_config_override=model_config_override,
                         )
@@ -359,13 +374,12 @@ class VideoService:
     ) -> AsyncGenerator[bytes, None]:
         """Generate video from image."""
         token_tag = _token_tag(token)
-        mode = (
-            "custom"
-            if VideoService.is_meaningful_video_prompt(prompt)
-            else "extremely-spicy-or-crazy"
-        )
+        # 确定逻辑上的 mode
+        is_custom = VideoService.is_meaningful_video_prompt(prompt)
+        official_mode = "custom" if is_custom else VideoService._map_preset_to_mode(preset)
+
         logger.info(
-            f"Image to video: token={token_tag}, prompt='{prompt[:50]}...', image={image_url[:80]}, mode={mode}"
+            f"Image to video: token={token_tag}, prompt='{prompt[:50]}...', image={image_url[:80]}, mode={official_mode}"
         )
         post_id = await self.create_image_post(token, image_url)
         message = self._build_video_message(
@@ -397,6 +411,7 @@ class VideoService:
                             token,
                             message=message,
                             model="grok-3",
+                            mode=official_mode,
                             tool_overrides={"videoGen": True},
                             model_config_override=model_config_override,
                         )
@@ -454,11 +469,7 @@ class VideoService:
     ) -> AsyncGenerator[bytes, None]:
         """Generate video by existing parent post ID (preferred path)."""
         token_tag = _token_tag(token)
-        mode = (
-            "custom"
-            if VideoService.is_meaningful_video_prompt(prompt)
-            else "extremely-spicy-or-crazy"
-        )
+        is_custom = VideoService.is_meaningful_video_prompt(prompt)
         logger.info(
             f"ParentPost to video: token={token_tag}, prompt='{prompt[:50]}...', parent_post_id={parent_post_id}"
         )
@@ -504,11 +515,15 @@ class VideoService:
         }
         moderated_max_retry = max(1, int(get_config("video.moderated_max_retry", 5)))
 
+        # 确定逻辑上的 mode
+        is_custom = VideoService.is_meaningful_video_prompt(prompt)
+        official_mode = "custom" if is_custom else VideoService._map_preset_to_mode(preset)
+
         logger.info(
             "ParentPost video request prepared: "
             f"token={token_tag}, parent_post_id={parent_post_id}, "
-            f"message_len={len(message)}, has_prompt={bool((prompt or '').strip())}, "
-            f"resolution={resolution}, video_length={video_length}, ratio={aspect_ratio}, mode={mode}"
+            f"message_len={len(message)}, has_prompt={is_custom}, "
+            f"resolution={resolution}, video_length={video_length}, ratio={aspect_ratio}, mode={official_mode}"
         )
 
         async def _stream():
@@ -522,6 +537,7 @@ class VideoService:
                             token,
                             message=message,
                             model="grok-3",
+                            mode=official_mode,
                             tool_overrides={"videoGen": True},
                             model_config_override=model_config_override,
                         )
@@ -567,6 +583,144 @@ class VideoService:
 
         return _stream()
 
+    async def generate_extend_video(
+        self,
+        token: str,
+        prompt: str,
+        extend_post_id: str,
+        video_extension_start_time: float,
+        original_post_id: str = "",
+        file_attachment_id: str = "",
+        aspect_ratio: str = "16:9",
+        video_length: int = 6,
+        resolution: str = "480p",
+        preset: str = "normal",
+        stitch_with_extend: bool = True,
+    ) -> AsyncGenerator[bytes, None]:
+        """通过 Grok 官方视频延长 API 延长视频。"""
+        token_tag = _token_tag(token)
+        # 确定 mode
+        prompt_text = (prompt or "").strip()
+        is_custom = VideoService.is_meaningful_video_prompt(prompt_text)
+        if is_custom:
+            mode = "custom"
+        else:
+            mode = VideoService._map_preset_to_mode(preset)
+            prompt_text = ""
+
+        effective_original = (original_post_id or "").strip() or extend_post_id
+        effective_file_attachment = (file_attachment_id or "").strip() or effective_original
+
+        logger.info(
+            "Video extension request: "
+            f"token={token_tag}, extend_post_id={extend_post_id}, "
+            f"start_time={video_extension_start_time}, original_post_id={effective_original}, "
+            f"prompt='{(prompt_text or '')[:50]}', mode={mode}"
+        )
+
+        # 构造 message
+        if prompt_text:
+            message = f"{prompt_text} --mode={mode}"
+        else:
+            message = f"--mode={mode}"
+
+        # 构造 videoGenModelConfig —— 对齐官网抓包格式
+        video_gen_config = {
+            "isVideoExtension": True,
+            "videoExtensionStartTime": video_extension_start_time,
+            "extendPostId": extend_post_id,
+            "stitchWithExtendPostId": stitch_with_extend,
+            "originalPostId": effective_original,
+            "originalRefType": "ORIGINAL_REF_TYPE_VIDEO_EXTENSION",
+            "mode": mode,
+            "aspectRatio": aspect_ratio,
+            "videoLength": video_length,
+            "resolutionName": resolution,
+            "parentPostId": extend_post_id,
+            "isVideoEdit": False,
+        }
+        if prompt_text:
+            video_gen_config["originalPrompt"] = prompt_text
+
+        model_config_override = {
+            "modelMap": {
+                "videoGenModelConfig": video_gen_config,
+            }
+        }
+
+        # fileAttachments 对齐官网：始终传最初图转视频时的 parentPostId
+        file_attachments = [effective_file_attachment]
+
+        moderated_max_retry = max(1, int(get_config("video.moderated_max_retry", 5)))
+
+        logger.info(
+            "Video extension request prepared: "
+            f"token={token_tag}, extend_post_id={extend_post_id}, "
+            f"file_attachments={file_attachments}, "
+            f"start_time={video_extension_start_time}, mode={mode}, "
+            f"resolution={resolution}, video_length={video_length}, ratio={aspect_ratio}"
+        )
+
+        async def _stream():
+            for attempt in range(1, moderated_max_retry + 1):
+                session = AsyncSession()
+                moderated_hit = False
+                try:
+                    async with _get_video_semaphore():
+                        stream_response = await AppChatReverse.request(
+                            session,
+                            token,
+                            message=message,
+                            model="grok-3",
+                            mode=mode,
+                            file_attachments=file_attachments,
+                            tool_overrides={"videoGen": True},
+                            model_config_override=model_config_override,
+                        )
+                        logger.info(
+                            "Video extension started: "
+                            f"token={token_tag}, extend_post_id={extend_post_id}, "
+                            f"attempt={attempt}/{moderated_max_retry}"
+                        )
+                        async for line in stream_response:
+                            if self._is_moderated_line(line):
+                                moderated_hit = True
+                                logger.warning(
+                                    f"Video extension moderated: token={token_tag}, "
+                                    f"retry {attempt}/{moderated_max_retry}"
+                                )
+                                break
+                            yield line
+
+                    if not moderated_hit:
+                        return
+                    if attempt < moderated_max_retry:
+                        await asyncio.sleep(1.2)
+                        continue
+                    raise UpstreamException(
+                        "Video extension blocked by moderation",
+                        status_code=400,
+                        details={"moderated": True, "attempts": moderated_max_retry},
+                    )
+                except Exception as e:
+                    logger.error(f"Video extension error: {e}")
+                    if isinstance(e, AppException):
+                        raise
+                    msg, code, status = _classify_video_error(e)
+                    raise AppException(
+                        message=msg,
+                        error_type=ErrorType.SERVER.value if status >= 500 else ErrorType.INVALID_REQUEST.value,
+                        code=code,
+                        status_code=status,
+                    )
+                finally:
+                    try:
+                        await session.close()
+                    except Exception:
+                        pass
+
+        return _stream()
+
     @staticmethod
     async def completions(
         model: str,
@@ -578,6 +732,11 @@ class VideoService:
         resolution: str = "480p",
         preset: str = "normal",
         parent_post_id: str | None = None,
+        extend_post_id: str | None = None,
+        video_extension_start_time: float | None = None,
+        original_post_id: str | None = None,
+        file_attachment_id: str | None = None,
+        stitch_with_extend: bool = True,
         source_image_url: str | None = None,
         preferred_token: str | None = None,
     ):
@@ -603,6 +762,19 @@ class VideoService:
         parent_post_id = (parent_post_id or "").strip() or None
         source_image_url = (source_image_url or "").strip()
         preferred_token = (preferred_token or "").strip()
+
+        # [NEW] 尝试通过 extend_post_id 或者 parent_post_id 获取强绑定的 token
+        from app.services.grok.utils.asset_token_map import AssetTokenMap
+        token_map = await AssetTokenMap.get_instance()
+        bound_token = None
+        if extend_post_id:
+            bound_token = await token_map.get_token(extend_post_id)
+        elif parent_post_id:
+            bound_token = await token_map.get_token(parent_post_id)
+            
+        if bound_token:
+            preferred_token = bound_token
+
         if preferred_token.startswith("sso="):
             preferred_token = preferred_token[4:]
         used_tokens: set[str] = set()
@@ -619,7 +791,7 @@ class VideoService:
                 else:
                     used_tokens.add(preferred_token)
                     logger.warning(
-                        f"Video token routing: preferred token not in pool, fallback to normal routing "
+                        f"Video token routing: preferred bound token not in pool, fallback to normal routing "
                         f"(token={_token_tag(preferred_token)})"
                     )
 
@@ -668,7 +840,22 @@ class VideoService:
 
                 # Generate video.
                 service = VideoService()
-                if parent_post_id:
+                if extend_post_id and video_extension_start_time is not None:
+                    # 视频延长路径
+                    response = await service.generate_extend_video(
+                        token=token,
+                        prompt=prompt,
+                        extend_post_id=extend_post_id,
+                        video_extension_start_time=video_extension_start_time,
+                        original_post_id=original_post_id or "",
+                        file_attachment_id=file_attachment_id or "",
+                        aspect_ratio=aspect_ratio,
+                        video_length=video_length,
+                        resolution=resolution,
+                        preset=preset,
+                        stitch_with_extend=stitch_with_extend,
+                    )
+                elif parent_post_id:
                     response = await service.generate_from_parent_post(
                         token=token,
                         prompt=prompt,
@@ -886,6 +1073,13 @@ class VideoStreamProcessor(BaseProcessor):
                     if progress == 100:
                         video_url = video_resp.get("videoUrl", "")
                         thumbnail_url = video_resp.get("thumbnailImageUrl", "")
+                        
+                        # [NEW] 记录生成的视频对应的 postId 与 token 以备延长
+                        video_post_id = video_resp.get("videoPostId") or self._extract_video_id(video_url)
+                        if video_post_id and self.token:
+                            from app.services.grok.utils.asset_token_map import AssetTokenMap
+                            token_map = await AssetTokenMap.get_instance()
+                            await token_map.save_mapping(video_post_id, self.token)
 
                         if self.think_opened:
                             yield self._sse("\n</think>\n")
@@ -901,7 +1095,7 @@ class VideoStreamProcessor(BaseProcessor):
                             )
                             yield self._sse(rendered)
 
-                            logger.info(f"Video generated: {video_url}")
+                            logger.info(f"Video generated: {video_url} (post_id={video_post_id})")
                     continue
 
             if self.think_opened:
@@ -1103,6 +1297,12 @@ class VideoCollectProcessor(BaseProcessor):
                         response_id = resp.get("responseId", "")
                         video_url = video_resp.get("videoUrl", "")
                         thumbnail_url = video_resp.get("thumbnailImageUrl", "")
+                        
+                        # [NEW] 记录生成的视频对应的 postId 与 token 以备延长
+                        if fallback_video_id and self.token:
+                            from app.services.grok.utils.asset_token_map import AssetTokenMap
+                            token_map = await AssetTokenMap.get_instance()
+                            await token_map.save_mapping(fallback_video_id, self.token)
 
                         if video_url:
                             if self.upscale_on_finish:
@@ -1111,7 +1311,8 @@ class VideoCollectProcessor(BaseProcessor):
                             content = await dl_service.render_video(
                                 video_url, self.token, thumbnail_url
                             )
-                            logger.info(f"Video generated: {video_url}")
+                            self.video_post_id = fallback_video_id
+                            logger.info(f"Video generated: {video_url} (post_id={fallback_video_id})")
                 elif model_resp := resp.get("modelResponse"):
                     file_attachments = model_resp.get("fileAttachments", [])
                     if isinstance(file_attachments, list):
@@ -1163,6 +1364,9 @@ class VideoCollectProcessor(BaseProcessor):
             )
         finally:
             await self.close()
+
+        # [NEW] 提取并包含 post_id
+        post_id = getattr(self, "video_post_id", fallback_video_id)
 
         if not content and fallback_video_id:
             asset_video_path, asset_thumb_path = await self._resolve_video_asset_path(

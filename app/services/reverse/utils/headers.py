@@ -2,6 +2,7 @@
 
 import uuid
 import orjson
+import random
 from urllib.parse import urlparse
 from typing import Dict, Optional
 
@@ -26,10 +27,16 @@ def build_sso_cookie(sso_token: str) -> str:
     # SSO Cookie
     cookie = f"sso={sso_token}; sso-rw={sso_token}"
 
-    # CF Clearance
-    cf_clearance = get_config("proxy.cf_clearance")
-    if cf_clearance:
-        cookie += f";cf_clearance={cf_clearance}"
+    # CF Cookies
+    cf_cookies = get_config("proxy.cf_cookies") or ""
+    if not cf_cookies:
+        cf_clearance = get_config("proxy.cf_clearance")
+        if cf_clearance:
+            cf_cookies = f"cf_clearance={cf_clearance}"
+    if cf_cookies:
+        if cookie and not cookie.endswith(";"):
+            cookie += "; "
+        cookie += cf_cookies
 
     return cookie
 
@@ -48,8 +55,6 @@ def build_ws_headers(token: Optional[str] = None, origin: Optional[str] = None, 
     """
     headers = {
         "Origin": origin or "https://grok.com",
-        "User-Agent": get_config("proxy.user_agent"),
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
@@ -76,22 +81,22 @@ def build_headers(cookie_token: str, content_type: Optional[str] = None, origin:
     Returns:
         Dict[str, str]: The headers dictionary.
     """
+    trace_id = uuid.uuid4().hex
+    span_id = uuid.uuid4().hex[:16]
+
     headers = {
-        "Accept-Encoding": "gzip, deflate, br, zstd",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Baggage": "sentry-environment=production,sentry-release=d6add6fb0460641fd482d767a335ef72b9b6abb8,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c",
+        "Baggage": f"sentry-environment=production,sentry-release=c43385ae21231a335971832ae5b5e8bdba69852d,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c,sentry-trace_id={trace_id},sentry-org_id=4508179396558848,sentry-sampled=false,sentry-sample_rand={random.random()},sentry-sample_rate=0",
         "Origin": origin or "https://grok.com",
         "Priority": "u=1, i",
         "Referer": referer or "https://grok.com/",
-        "Sec-Ch-Ua": '"Google Chrome";v="136", "Chromium";v="136", "Not(A:Brand";v="24"',
-        "Sec-Ch-Ua-Arch": "arm",
-        "Sec-Ch-Ua-Bitness": "64",
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Model": "",
-        "Sec-Ch-Ua-Platform": '"macOS"',
         "Sec-Fetch-Mode": "cors",
-        "User-Agent": get_config("proxy.user_agent"),
+        "Sentry-Trace": f"{trace_id}-{span_id}-0",
+        "Traceparent": f"00-{trace_id}-{span_id}-00",
     }
+    
+    user_agent = get_config("proxy.user_agent")
+    if user_agent:
+        headers["User-Agent"] = user_agent
 
     # Cookie
     headers["Cookie"] = build_sso_cookie(cookie_token)

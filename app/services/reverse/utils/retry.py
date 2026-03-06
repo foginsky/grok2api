@@ -16,17 +16,17 @@ class RetryContext:
 
     def __init__(self):
         self.attempt = 0
-        self.max_retry = int(get_config("retry.max_retry"))
-        self.retry_codes = get_config("retry.retry_status_codes")
+        self.max_retry = int(get_config("retry.max_retry") or 3)
+        self.retry_codes = get_config("retry.retry_status_codes") or [401, 403, 429]
         self.last_error = None
         self.last_status = None
         self.total_delay = 0.0
-        self.retry_budget = float(get_config("retry.retry_budget"))
+        self.retry_budget = float(get_config("retry.retry_budget") or 60.0)
 
         # Backoff parameters
-        self.backoff_base = float(get_config("retry.retry_backoff_base"))
-        self.backoff_factor = float(get_config("retry.retry_backoff_factor"))
-        self.backoff_max = float(get_config("retry.retry_backoff_max"))
+        self.backoff_base = float(get_config("retry.retry_backoff_base") or 0.5)
+        self.backoff_factor = float(get_config("retry.retry_backoff_factor") or 2.0)
+        self.backoff_max = float(get_config("retry.retry_backoff_max") or 20.0)
 
         # Decorrelated jitter state
         self._last_delay = self.backoff_base
@@ -123,6 +123,7 @@ async def retry_on_status(
     *args,
     extract_status: Callable[[Exception], Optional[int]] = None,
     on_retry: Callable[[int, int, Exception, float], None] = None,
+    retry_status_codes: Optional[list[int]] = None,
     **kwargs,
 ) -> Any:
     """
@@ -142,6 +143,10 @@ async def retry_on_status(
         Last failed exception
     """
     ctx = RetryContext()
+    if retry_status_codes:
+        merged_codes = set(ctx.retry_codes or [])
+        merged_codes.update(int(code) for code in retry_status_codes)
+        ctx.retry_codes = sorted(merged_codes)
 
     # Status code extractor
     if extract_status is None:

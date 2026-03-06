@@ -315,15 +315,32 @@
 
   function parseEnhancedPrompt(text) {
     const raw = String(text || '').trim();
-    const headMatch = raw.match(/^([\s\S]*?)\s*最终提示词[:：]/);
-    const enMatch = raw.match(/最终提示词[:：]\s*([\s\S]*?)\s*中文参考版[:：]/);
-    const zhMatch = raw.match(/中文参考版[:：]\s*([\s\S]*?)\s*可调参数[:：]/);
-    const tailMatch = raw.match(/(可调参数[:：][\s\S]*)$/);
+    // 兼容 Markdown 标题、粗体标题、普通标题三种写法
+    const finalLabelRe = /(?:^|\n)\s{0,3}(?:#{1,6}\s*)?\*{0,2}\s*最终提示词(?:（[^）]*）|\([^)]*\))?\s*\*{0,2}\s*[:：]?/;
+    const zhLabelRe = /(?:^|\n)\s{0,3}(?:#{1,6}\s*)?\*{0,2}\s*中文参考版(?:（[^）]*）|\([^)]*\))?\s*\*{0,2}\s*[:：]?/;
+    const tailLabelRe = /(?:^|\n)\s{0,3}(?:#{1,6}\s*)?\*{0,2}\s*可调参数(?:（[^）]*）|\([^)]*\))?\s*\*{0,2}\s*[:：]?/;
+    const finalLabelMatch = finalLabelRe.exec(raw);
+    const zhLabelMatch = zhLabelRe.exec(raw);
+    const tailLabelMatch = tailLabelRe.exec(raw);
+
+    const finalStart = finalLabelMatch ? finalLabelMatch.index + finalLabelMatch[0].length : -1;
+    const zhStart = zhLabelMatch ? zhLabelMatch.index + zhLabelMatch[0].length : -1;
+    const tailStart = tailLabelMatch ? tailLabelMatch.index : -1;
+
+    const head = finalLabelMatch ? raw.slice(0, finalLabelMatch.index).trim() : '';
+    const en = (finalStart >= 0 && zhLabelMatch && zhLabelMatch.index >= finalStart)
+      ? raw.slice(finalStart, zhLabelMatch.index).trim()
+      : '';
+    const zhEnd = tailStart >= 0 ? tailStart : raw.length;
+    const zh = (zhStart >= 0 && zhEnd >= zhStart)
+      ? raw.slice(zhStart, zhEnd).trim()
+      : '';
+    const tail = tailStart >= 0 ? raw.slice(tailStart).trim() : '';
     return {
-      head: headMatch && headMatch[1] ? String(headMatch[1]).trim() : '',
-      en: enMatch && enMatch[1] ? String(enMatch[1]).trim() : '',
-      zh: zhMatch && zhMatch[1] ? String(zhMatch[1]).trim() : '',
-      tail: tailMatch && tailMatch[1] ? String(tailMatch[1]).trim() : '',
+      head,
+      en,
+      zh,
+      tail,
       raw,
     };
   }
@@ -464,7 +481,11 @@
   function buildDesktopText(state, mode) {
     const middleLabel = mode === 'en' ? '最终提示词：' : '中文参考版：';
     const middleText = mode === 'en' ? state.en : state.zh;
-    return `${state.head}\n\n${middleLabel}\n${middleText}\n\n${state.tail}`;
+    const blocks = [];
+    if (state.head) blocks.push(state.head);
+    blocks.push(`${middleLabel}\n${middleText}`);
+    if (state.tail) blocks.push(state.tail);
+    return blocks.join('\n\n');
   }
 
   function applyEnhancedByMode(textarea, toggleBtn, mode) {
@@ -531,7 +552,7 @@
     try {
       const enhanced = await callEnhanceApi(raw, controller.signal, authHeader, requestId);
       const parsed = parseEnhancedPrompt(enhanced);
-      const hasDualLanguage = Boolean(parsed.en && parsed.zh && parsed.head && parsed.tail);
+      const hasDualLanguage = Boolean(parsed.en && parsed.zh);
       const mode = ((enhanceStateMap.get(textarea) || {}).mode || 'zh');
       enhanceStateMap.set(textarea, {
         head: parsed.head,
@@ -614,7 +635,7 @@
     updateToggleButtonText(langBtn, 'zh');
     langBtn.addEventListener('click', () => {
       const state = enhanceStateMap.get(textarea);
-      if (!state || (!state.en && !state.zh) || !state.head || !state.tail) {
+      if (!state || (!state.en && !state.zh)) {
         toast('请先增强提示词', 'warning');
         return;
       }
@@ -647,4 +668,3 @@
     init();
   }
 })();
-

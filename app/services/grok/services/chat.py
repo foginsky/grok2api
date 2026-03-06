@@ -33,7 +33,7 @@ _CHAT_SEMAPHORE = None
 _CHAT_SEM_VALUE = None
 
 
-def extract_tool_text(raw: str) -> str:
+def extract_tool_text(raw: str, rollout_id: str = "") -> str:
     if not raw:
         return ""
     name_match = re.search(
@@ -60,12 +60,13 @@ def extract_tool_text(raw: str) -> str:
 
     label = name
     text = args
+    prefix = f"[{rollout_id}]" if rollout_id else ""
     if name == "web_search":
-        label = "[WebSearch]"
+        label = f"{prefix}[WebSearch]"
         if isinstance(payload, dict):
             text = payload.get("query") or payload.get("q") or ""
     elif name == "search_images":
-        label = "[SearchImage]"
+        label = f"{prefix}[SearchImage]"
         if isinstance(payload, dict):
             text = (
                 payload.get("image_description")
@@ -74,7 +75,7 @@ def extract_tool_text(raw: str) -> str:
                 or ""
             )
     elif name == "chatroom_send":
-        label = "[AgentThink]"
+        label = f"{prefix}[AgentThink]"
         if isinstance(payload, dict):
             text = payload.get("message") or ""
 
@@ -281,6 +282,12 @@ class GrokChatService:
         if reasoning_effort is not None:
             model_config_override["reasoningEffort"] = reasoning_effort
 
+        # Passthrough mode: build tool_overrides for Grok API
+        tool_overrides_payload = None
+        # We need to extract tools from some upper context if passed, but since the upstream
+        # signature changed, we will just patch it carefully.
+        # Since this is a partial restore, we initialize to None and just pass it.
+
         response = await self.chat(
             token=token,
             message=message,
@@ -289,6 +296,7 @@ class GrokChatService:
             mode=mode,
             stream=stream,
             file_attachments=all_attachments,
+            tool_overrides=tool_overrides_payload,
             model_config_override=model_config_override,
         )
 
@@ -408,8 +416,12 @@ class StreamProcessor(proc_base.BaseProcessor):
     def __init__(self, model: str, token: str = "", show_think: bool = None):
         super().__init__(model, token)
         self.response_id: str = None
+        self.rollout_id: str = ""
         self.fingerprint: str = ""
         self.think_opened: bool = False
+        self.seen_think_once: bool = False
+        self.image_think_active: bool = False
+        self.answer_buffer: list[str] = []
         self.role_sent: bool = False
         self.filter_tags = get_config("app.filter_tags")
         self.tool_usage_enabled = (
@@ -437,7 +449,7 @@ class StreamProcessor(proc_base.BaseProcessor):
                     return "".join(output_parts)
                 end_pos = end_idx + len(end_tag)
                 self._tool_usage_buffer += rest[:end_pos]
-                line = extract_tool_text(self._tool_usage_buffer)
+                line = extract_tool_text(self._tool_usage_buffer, self.rollout_id)
                 if line:
                     if output_parts and not output_parts[-1].endswith("\n"):
                         output_parts[-1] += "\n"
@@ -463,7 +475,7 @@ class StreamProcessor(proc_base.BaseProcessor):
 
             end_pos = end_idx + len(end_tag)
             raw_card = rest[start_idx:end_pos]
-            line = extract_tool_text(raw_card)
+            line = extract_tool_text(raw_card, self.rollout_id)
             if line:
                 if output_parts and not output_parts[-1].endswith("\n"):
                     output_parts[-1] += "\n"
@@ -524,10 +536,11 @@ class StreamProcessor(proc_base.BaseProcessor):
             AsyncGenerator[str, None], async generator of strings
         """
         idle_timeout = get_config("chat.stream_timeout")
+        first_item_timeout = get_config("chat.first_token_timeout")
 
         try:
             async for line in proc_base._with_idle_timeout(
-                response, idle_timeout, self.model
+                response, idle_timeout, self.model, first_item_timeout
             ):
                 line = proc_base._normalize_line(line)
                 if not line:
@@ -546,6 +559,8 @@ class StreamProcessor(proc_base.BaseProcessor):
                     self.fingerprint = llm.get("modelHash", "")
                 if rid := resp.get("responseId"):
                     self.response_id = rid
+                if rid := resp.get("rolloutId"):
+                    self.rollout_id = str(rid)
 
                 if not self.role_sent:
                     yield self._sse(role="assistant")
@@ -554,12 +569,11 @@ class StreamProcessor(proc_base.BaseProcessor):
                 if img := resp.get("streamingImageGenerationResponse"):
                     if not self.show_think:
                         continue
-                    if is_thinking and not self.think_opened:
+                    self.image_think_active = True
+                    if not self.think_opened:
                         yield self._sse("<think>\n")
                         self.think_opened = True
-                    if (not is_thinking) and self.think_opened:
-                        yield self._sse("\n</think>\n")
-                        self.think_opened = False
+                    self.seen_think_once = True
                     idx = img.get("imageIndex", 0) + 1
                     progress = img.get("progress", 0)
                     yield self._sse(
@@ -568,6 +582,7 @@ class StreamProcessor(proc_base.BaseProcessor):
                     continue
 
                 if mr := resp.get("modelResponse"):
+                    self.image_think_active = False
                     for url in proc_base._collect_images(mr):
                         parts = url.split("/")
                         img_id = parts[-2] if len(parts) >= 2 else "image"
@@ -610,20 +625,37 @@ class StreamProcessor(proc_base.BaseProcessor):
                     filtered = self._filter_token(token)
                     if not filtered:
                         continue
-                    if is_thinking:
+                    # 避免上游字面 <think> 标签与前端思考分段逻辑冲突，导致多段思考块
+                    filtered = re.sub(r"</?think>", "", filtered, flags=re.IGNORECASE)
+                    if not filtered:
+                        continue
+                    in_think = (
+                        is_thinking
+                        or self.image_think_active
+                    )
+                    if in_think:
                         if not self.show_think:
                             continue
                         if not self.think_opened:
                             yield self._sse("<think>\n")
                             self.think_opened = True
-                    else:
-                        if self.think_opened:
-                            yield self._sse("\n</think>\n")
-                            self.think_opened = False
+                        self.seen_think_once = True
+                        yield self._sse(filtered)
+                        continue
+
+                    # 一旦进入思考模式，先缓存正文，等思考结束后再统一输出
+                    if self.show_think and self.seen_think_once:
+                        self.answer_buffer.append(filtered)
+                        continue
+
                     yield self._sse(filtered)
 
             if self.think_opened:
                 yield self._sse("</think>\n")
+                self.think_opened = False
+            if self.answer_buffer:
+                yield self._sse("".join(self.answer_buffer))
+                self.answer_buffer = []
             yield self._sse(finish="stop")
             yield "data: [DONE]\n\n"
         except asyncio.CancelledError:
@@ -689,11 +721,17 @@ class CollectProcessor(proc_base.BaseProcessor):
 
         result = content
         if "xai:tool_usage_card" in self.filter_tags:
+            rollout_id = ""
+            rollout_match = re.search(
+                r"<rolloutId>(.*?)</rolloutId>", result, flags=re.DOTALL
+            )
+            if rollout_match:
+                rollout_id = rollout_match.group(1).strip()
             result = re.sub(
                 r"<xai:tool_usage_card[^>]*>.*?</xai:tool_usage_card>",
                 lambda match: (
-                    f"{extract_tool_text(match.group(0))}\n"
-                    if extract_tool_text(match.group(0))
+                    f"{extract_tool_text(match.group(0), rollout_id)}\n"
+                    if extract_tool_text(match.group(0), rollout_id)
                     else ""
                 ),
                 result,
@@ -714,10 +752,11 @@ class CollectProcessor(proc_base.BaseProcessor):
         fingerprint = ""
         content = ""
         idle_timeout = get_config("chat.stream_timeout")
+        first_item_timeout = get_config("chat.first_token_timeout")
 
         try:
             async for line in proc_base._with_idle_timeout(
-                response, idle_timeout, self.model
+                response, idle_timeout, self.model, first_item_timeout
             ):
                 line = proc_base._normalize_line(line)
                 if not line:

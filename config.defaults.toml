@@ -34,6 +34,14 @@ filter_tags = ["xaiartifact","xai:tool_usage_card","grok:render"]
 base_proxy_url = ""
 # 资源代理地址（代理静态资源如图片/视频）
 asset_proxy_url = ""
+# 是否启用 CF 自动刷新
+enabled = false
+# FlareSolverr 服务地址（通过环境变量 FLARESOLVERR_URL 自动设置）
+flaresolverr_url = ""
+# 刷新间隔（秒）
+refresh_interval = 3600
+# CF 挑战等待超时（秒）
+timeout = 60
 # Cloudflare Clearance Cookie
 cf_clearance = ""
 # curl_cffi 浏览器指纹
@@ -84,8 +92,12 @@ limit_mb = 512
 [chat]
 # Reverse 接口并发上限
 concurrent = 50
+# 连接超时时间（秒），用于弱网快速失败
+connect_timeout = 12
 # Reverse 接口超时时间（秒）
 timeout = 60
+# 首包超时时间（秒），连接成功后迟迟无返回则快速超时
+first_token_timeout = 20
 # 流式空闲超时时间（秒）
 stream_timeout = 60
 
