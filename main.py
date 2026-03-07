@@ -10,11 +10,8 @@ import os
 import platform
 import sys
 from pathlib import Path
-from typing import Dict, List
-import asyncio
 
 from dotenv import load_dotenv
-import httpx
 
 BASE_DIR = Path(__file__).resolve().parent
 APP_DIR = BASE_DIR / "app"
@@ -56,82 +53,6 @@ setup_logging(
 )
 
 
-FFMPEG_VENDOR_DIR = APP_DIR / "static" / "vendor" / "ffmpeg"
-FFMPEG_VENDOR_ASSETS: Dict[str, List[str]] = {
-    "ffmpeg.js": [
-        "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js",
-        "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js",
-    ],
-    "814.ffmpeg.js": [
-        "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js",
-        "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js",
-    ],
-    "ffmpeg.js.map": [
-        "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js.map",
-        "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js.map",
-    ],
-    "814.ffmpeg.js.map": [
-        "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js.map",
-        "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js.map",
-    ],
-    "ffmpeg-util.js": [
-        "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js",
-        "https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js",
-    ],
-    "ffmpeg-core.js": [
-        "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
-        "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
-    ],
-    "ffmpeg-core.wasm": [
-        "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
-        "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
-    ],
-}
-
-
-async def _download_first_success(
-    client: httpx.AsyncClient, filename: str, urls: List[str], target_path: Path
-) -> bool:
-    for url in urls:
-        try:
-            resp = await client.get(url, follow_redirects=True)
-            if resp.status_code == 200 and resp.content:
-                target_path.write_bytes(resp.content)
-                logger.info(
-                    f"FFmpeg vendor downloaded: {filename} <- {url} ({len(resp.content)} bytes)"
-                )
-                return True
-            logger.warning(
-                f"FFmpeg vendor candidate failed: {filename} <- {url} status={resp.status_code}"
-            )
-        except Exception as e:
-            logger.warning(f"FFmpeg vendor download error: {filename} <- {url}, error={e}")
-    return False
-
-
-async def ensure_ffmpeg_vendor_assets() -> None:
-    """启动时预热 ffmpeg 前端依赖到本地静态目录，避免浏览器跨域/CORS 问题。"""
-    FFMPEG_VENDOR_DIR.mkdir(parents=True, exist_ok=True)
-    timeout = httpx.Timeout(connect=8.0, read=30.0, write=30.0, pool=8.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        tasks = []
-        pending_names: list[str] = []
-        for filename, urls in FFMPEG_VENDOR_ASSETS.items():
-            target = FFMPEG_VENDOR_DIR / filename
-            if target.exists() and target.stat().st_size > 0:
-                logger.info(f"FFmpeg vendor exists: {filename}")
-                continue
-            pending_names.append(filename)
-            tasks.append(_download_first_success(client, filename, urls, target))
-
-        if not tasks:
-            return
-        results = await asyncio.gather(*tasks, return_exceptions=False)
-        failed = [name for name, ok in zip(pending_names, results) if not ok]
-        if failed:
-            logger.warning(f"FFmpeg vendor partial ready, failed={failed}")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -148,7 +69,6 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Grok2API...")
     logger.info(f"Platform: {platform.system()} {platform.release()}")
     logger.info(f"Python: {sys.version.split()[0]}")
-    await ensure_ffmpeg_vendor_assets()
 
     # 4. 启动 Token 刷新调度器
     refresh_enabled = get_config("token.auto_refresh", True)

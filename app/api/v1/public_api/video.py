@@ -5,9 +5,8 @@ import uuid
 from typing import Optional, List, Dict, Any
 
 import orjson
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.core.auth import verify_public_key
@@ -23,8 +22,6 @@ router = APIRouter()
 VIDEO_SESSION_TTL = 600
 _VIDEO_SESSIONS: dict[str, dict] = {}
 _VIDEO_SESSIONS_LOCK = asyncio.Lock()
-_VENDOR_CACHE: dict[str, bytes] = {}
-_VENDOR_LOCK = asyncio.Lock()
 
 _VIDEO_RATIO_MAP = {
     "1280x720": "16:9",
@@ -37,28 +34,6 @@ _VIDEO_RATIO_MAP = {
     "3:2": "3:2",
     "2:3": "2:3",
     "1:1": "1:1",
-}
-
-_FFMPEG_VENDOR_SOURCES = {
-    "ffmpeg-core.js": [
-        "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
-        "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
-    ],
-    "ffmpeg-core.wasm": [
-        "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
-        "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
-    ],
-    # 某些版本没有 worker 文件，允许返回 404 由前端自动降级。
-    "ffmpeg-core.worker.js": [
-        "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.worker.js",
-        "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.worker.js",
-    ],
-}
-
-_VENDOR_CONTENT_TYPE = {
-    "ffmpeg-core.js": "application/javascript; charset=utf-8",
-    "ffmpeg-core.worker.js": "application/javascript; charset=utf-8",
-    "ffmpeg-core.wasm": "application/wasm",
 }
 
 
@@ -519,56 +494,6 @@ class VideoStopRequest(BaseModel):
 async def public_video_stop(data: VideoStopRequest):
     removed = await _drop_sessions(data.task_ids or [])
     return {"status": "success", "removed": removed}
-
-
-@router.get("/video/vendor/{filename}")
-async def public_video_vendor(filename: str):
-    filename = str(filename or "").strip()
-    if filename not in _FFMPEG_VENDOR_SOURCES:
-        raise HTTPException(status_code=404, detail="vendor asset not found")
-
-    async with _VENDOR_LOCK:
-        cached = _VENDOR_CACHE.get(filename)
-    if cached:
-        return Response(
-            content=cached,
-            media_type=_VENDOR_CONTENT_TYPE.get(filename, "application/octet-stream"),
-            headers={"Cache-Control": "public, max-age=86400"},
-        )
-
-    timeout = httpx.Timeout(connect=8.0, read=60.0, write=30.0, pool=8.0)
-    last_error = None
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        for url in _FFMPEG_VENDOR_SOURCES[filename]:
-            try:
-                resp = await client.get(url, follow_redirects=True)
-                if resp.status_code == 200 and resp.content:
-                    content = bytes(resp.content)
-                    async with _VENDOR_LOCK:
-                        _VENDOR_CACHE[filename] = content
-                    logger.info(
-                        f"Video vendor proxy loaded: {filename} <- {url} ({len(content)} bytes)"
-                    )
-                    return Response(
-                        content=content,
-                        media_type=_VENDOR_CONTENT_TYPE.get(
-                            filename, "application/octet-stream"
-                        ),
-                        headers={"Cache-Control": "public, max-age=86400"},
-                    )
-                last_error = f"status={resp.status_code}"
-            except Exception as e:
-                last_error = str(e)
-
-    if filename == "ffmpeg-core.worker.js":
-        raise HTTPException(
-            status_code=404,
-            detail="optional worker asset not found",
-        )
-    raise HTTPException(
-        status_code=502,
-        detail=f"vendor fetch failed: {filename}, error={last_error or 'unknown'}",
-    )
 
 
 @router.get("/video/cache/list", dependencies=[Depends(verify_public_key)])
