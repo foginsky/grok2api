@@ -34,7 +34,7 @@ filter_tags = ["xaiartifact","xai:tool_usage_card","grok:render"]
 base_proxy_url = ""
 # 资源代理地址（代理静态资源如图片/视频）
 asset_proxy_url = ""
-# ???? SSL ??????????????????
+# 跳过代理 SSL 证书校验（仅建议在特殊代理环境下启用）
 skip_proxy_ssl_verify = false
 # 是否启用 CF 自动刷新
 enabled = false
@@ -58,7 +58,7 @@ user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
 max_retry = 3
 # 触发重试的 HTTP 状态码
 retry_status_codes = [401,429,403]
-# ???? session ? HTTP ???
+# 遇到这些 HTTP 状态码时自动重建 session
 reset_session_status_codes = [403]
 # 退避基础延迟（秒）
 retry_backoff_base = 0.5
