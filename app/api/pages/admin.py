@@ -1,10 +1,30 @@
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 
 router = APIRouter()
-STATIC_DIR = Path(__file__).resolve().parents[2] / "static"
+
+
+def _resolve_static_dir() -> Path:
+    """Resolve static directory across local and serverless layouts."""
+
+    candidates = []
+    candidates.append(Path(__file__).resolve().parents[2] / "static")
+    candidates.append(Path.cwd() / "app" / "static")
+    candidates.append(Path.cwd() / "_vendor" / "app" / "static")
+    task_root = os.getenv("LAMBDA_TASK_ROOT")
+    if task_root:
+        candidates.append(Path(task_root) / "app" / "static")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+STATIC_DIR = _resolve_static_dir()
 
 
 def _admin_page_response(relative_path: str) -> FileResponse:

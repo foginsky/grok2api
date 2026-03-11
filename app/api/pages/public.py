@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -6,7 +7,30 @@ from fastapi.responses import FileResponse, RedirectResponse
 from app.core.auth import is_public_enabled
 
 router = APIRouter()
-STATIC_DIR = Path(__file__).resolve().parents[2] / "static"
+
+
+def _resolve_static_dir() -> Path:
+    """Resolve static directory across local and serverless layouts."""
+
+    candidates = []
+    # Standard local layout: <repo>/app/static
+    candidates.append(Path(__file__).resolve().parents[2] / "static")
+    # Vercel/Lambda runtime: project root is cwd
+    candidates.append(Path.cwd() / "app" / "static")
+    # Some builders may vendor user code under _vendor
+    candidates.append(Path.cwd() / "_vendor" / "app" / "static")
+    # Lambda task root fallback
+    task_root = os.getenv("LAMBDA_TASK_ROOT")
+    if task_root:
+        candidates.append(Path(task_root) / "app" / "static")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+STATIC_DIR = _resolve_static_dir()
 
 
 def _public_page_response(relative_path: str) -> FileResponse:
