@@ -72,11 +72,38 @@ def _format_json(record) -> str:
 
     return json.dumps(log_entry, ensure_ascii=False)
 
+
 def _env_flag(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on", "y")
+
+
+def _is_serverless_runtime() -> bool:
+    """Detect serverless runtimes where multiprocessing semaphores may be unavailable.
+
+    loguru `enqueue=True` relies on multiprocessing primitives which can crash on
+    AWS Lambda-style environments (including Vercel Python Runtime).
+    """
+
+    return bool(
+        os.getenv("VERCEL")
+        or os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+        or os.getenv("AWS_EXECUTION_ENV")
+        or os.getenv("LAMBDA_TASK_ROOT")
+    )
+
+
+def _safe_add(*args, **kwargs):
+    """logger.add with fallback when enqueue crashes."""
+
+    try:
+        return logger.add(*args, **kwargs)
+    except FileNotFoundError:
+        # Common on serverless: multiprocessing.SemLock fails.
+        kwargs["enqueue"] = False
+        return logger.add(*args, **kwargs)
 
 
 def _make_json_sink(output):
@@ -106,33 +133,34 @@ def setup_logging(
     """设置日志配置"""
     logger.remove()
     file_logging = _env_flag("LOG_FILE_ENABLED", file_logging)
+    enqueue = _env_flag("LOG_ENQUEUE_ENABLED", True) and not _is_serverless_runtime()
 
     # 控制台输出
     if json_console:
-        logger.add(
+        _safe_add(
             _make_json_sink(sys.stderr),
             level=level,
             format="{message}",
             colorize=False,
-            enqueue=True,
+            enqueue=enqueue,
         )
     else:
-        logger.add(
+        _safe_add(
             sys.stderr,
             level=level,
             format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{file.name}:{line}</cyan> - <level>{message}</level>",
             colorize=True,
-            enqueue=True,
+            enqueue=enqueue,
         )
 
     # 文件输出
     if file_logging:
         if _prepare_log_dir():
-            logger.add(
+            _safe_add(
                 _file_json_sink,
                 level=level,
                 format="{message}",
-                enqueue=True,
+                enqueue=enqueue,
             )
         else:
             logger.warning("File logging disabled: no writable log directory.")
