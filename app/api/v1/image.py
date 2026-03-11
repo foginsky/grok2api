@@ -64,33 +64,33 @@ class ImageGenerationRequest(BaseModel):
     """图片生成请求 - OpenAI 兼容"""
 
     prompt: str = Field(..., description="图片描述")
-    model: Optional[str] = Field("grok-imagine-1.0", description="模型名称")
-    n: Optional[int] = Field(1, ge=1, le=10, description="生成数量 (1-10)")
-    size: Optional[str] = Field(
+    model: str = Field("grok-imagine-1.0", description="模型名称")
+    n: int = Field(1, ge=1, le=10, description="生成数量 (1-10)")
+    size: str = Field(
         "1024x1024",
         description="图片尺寸: 1280x720, 720x1280, 1792x1024, 1024x1792, 1024x1024",
     )
-    quality: Optional[str] = Field("standard", description="图片质量 (暂不支持)")
+    quality: str = Field("standard", description="图片质量 (暂不支持)")
     response_format: Optional[str] = Field(None, description="响应格式")
     style: Optional[str] = Field(None, description="风格 (暂不支持)")
-    stream: Optional[bool] = Field(False, description="是否流式输出")
+    stream: bool = Field(False, description="是否流式输出")
 
 
 class ImageEditRequest(BaseModel):
     """图片编辑请求 - OpenAI 兼容"""
 
     prompt: str = Field(..., description="编辑描述")
-    model: Optional[str] = Field("grok-imagine-1.0-edit", description="模型名称")
+    model: str = Field("grok-imagine-1.0-edit", description="模型名称")
     image: Optional[Union[str, List[str]]] = Field(None, description="待编辑图片文件")
-    n: Optional[int] = Field(1, ge=1, le=10, description="生成数量 (1-10)")
-    size: Optional[str] = Field(
+    n: int = Field(1, ge=1, le=10, description="生成数量 (1-10)")
+    size: str = Field(
         "1024x1024",
         description="图片尺寸: 1280x720, 720x1280, 1792x1024, 1024x1792, 1024x1024",
     )
-    quality: Optional[str] = Field("standard", description="图片质量 (暂不支持)")
+    quality: str = Field("standard", description="图片质量 (暂不支持)")
     response_format: Optional[str] = Field(None, description="响应格式")
     style: Optional[str] = Field(None, description="风格 (暂不支持)")
-    stream: Optional[bool] = Field(False, description="是否流式输出")
+    stream: bool = Field(False, description="是否流式输出")
 
 
 def _validate_common_request(
@@ -270,8 +270,12 @@ async def create_image(request: ImageGenerationRequest):
     - {"created": ..., "data": [{"b64_json": "..."}], "usage": {...}}
     """
     try:
-        # stream 默认为 false
-        if request.stream is None:
+        # 为了最大化兼容 OpenAI Images API 客户端（多数不支持 SSE 生图），默认禁用该端点的流式。
+        # 若确实需要，可通过 image.api_stream_enabled=true 显式开启。
+        if request.stream and not bool(get_config("image.api_stream_enabled", False)):
+            logger.info(
+                "Image API streaming disabled by default; forcing stream=false for compatibility"
+            )
             request.stream = False
 
         if request.response_format is None:
@@ -311,6 +315,13 @@ async def create_image(request: ImageGenerationRequest):
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
 
+        if not isinstance(result.data, list):
+            raise AppException(
+                message="Image generation failed due to unexpected stream response",
+                error_type=ErrorType.SERVER.value,
+                code="image_unexpected_stream",
+                status_code=500,
+            )
         data = [{response_field: img} for img in result.data]
         usage = result.usage_override or {
             "total_tokens": 0,
@@ -365,7 +376,7 @@ async def edit_image(
         try:
             edit_request = ImageEditRequest(
                 prompt=prompt,
-                model=model,
+                model=model or "grok-imagine-1.0-edit",
                 n=n,
                 size=size,
                 quality=quality,
@@ -467,6 +478,13 @@ async def edit_image(
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
 
+        if not isinstance(result.data, list):
+            raise AppException(
+                message="Image edit failed due to unexpected stream response",
+                error_type=ErrorType.SERVER.value,
+                code="image_edit_unexpected_stream",
+                status_code=500,
+            )
         data = [{response_field: img} for img in result.data]
 
         return JSONResponse(

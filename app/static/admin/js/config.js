@@ -99,6 +99,7 @@ const LOCALE_MAP = {
     "timeout": { title: "请求超时", desc: "WebSocket 请求超时时间（秒）。" },
     "stream_timeout": { title: "流空闲超时", desc: "WebSocket 流式空闲超时时间（秒）。" },
     "final_timeout": { title: "最终图超时", desc: "收到中等图后等待最终图的超时秒数。" },
+    "api_stream_enabled": { title: "API 流式生图", desc: "是否允许 /v1/images/generations 返回 SSE 流式事件（partial_image/completed）。多数客户端不支持，默认关闭。" },
     "nsfw": { title: "NSFW 模式", desc: "WebSocket 请求是否启用 NSFW。" },
     "medium_min_bytes": { title: "中等图最小字节", desc: "判定中等质量图的最小字节数。" },
     "final_min_bytes": { title: "最终图最小字节", desc: "判定最终图的最小字节数（通常 JPG > 100KB）。" }

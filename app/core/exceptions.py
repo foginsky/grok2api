@@ -2,7 +2,7 @@
 全局异常处理 - OpenAI 兼容错误格式
 """
 
-from typing import Any
+from typing import Any, Optional
 from enum import Enum
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -32,8 +32,8 @@ class ErrorType(str, Enum):
 def error_response(
     message: str,
     error_type: str = ErrorType.INVALID_REQUEST.value,
-    param: str = None,
-    code: str = None,
+    param: Optional[str] = None,
+    code: Optional[str] = None,
 ) -> dict:
     """构建 OpenAI 错误响应"""
     return {
@@ -51,8 +51,8 @@ class AppException(Exception):
         self,
         message: str,
         error_type: str = ErrorType.SERVER.value,
-        code: str = None,
-        param: str = None,
+        code: Optional[str] = None,
+        param: Optional[str] = None,
         status_code: int = 500,
     ):
         self.message = message
@@ -66,7 +66,12 @@ class AppException(Exception):
 class ValidationException(AppException):
     """验证错误"""
 
-    def __init__(self, message: str, param: str = None, code: str = None):
+    def __init__(
+        self,
+        message: str,
+        param: Optional[str] = None,
+        code: Optional[str] = None,
+    ):
         super().__init__(
             message=message,
             error_type=ErrorType.INVALID_REQUEST.value,

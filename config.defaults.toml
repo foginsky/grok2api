@@ -113,6 +113,9 @@ timeout = 60
 stream_timeout = 60
 # 中等图后等待最终图的超时秒数
 final_timeout = 15
+# Images API 是否允许流式（SSE partial_image/completed）。
+# 为兼容多数 OpenAI Images 客户端，默认关闭；需要时再显式开启。
+api_stream_enabled = false
 # 是否启用 NSFW
 nsfw = true
 # 判定为中等质量图的最小字节数
