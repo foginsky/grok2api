@@ -6,15 +6,11 @@
     "LOG_FILE_ENABLED": "false",
     "DATA_DIR": "/tmp/data"
   },
-  "builds": [
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python",
-      "config": {
-        "includeFiles": "{config.defaults.toml,app/**}"
-      }
+  "functions": {
+    "api/**/*.py": {
+      "includeFiles": "{config.defaults.toml,app/**}"
     }
-  ],
+  },
   "routes": [
     {
       "src": "/(.*)",
