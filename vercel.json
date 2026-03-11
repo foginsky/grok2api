@@ -9,10 +9,7 @@
   },
   "functions": {
     "api/index.py": {
-      "includeFiles": [
-        "config.defaults.toml",
-        "app/**"
-      ]
+      "includeFiles": "{config.defaults.toml,app/**}"
     }
   }
 }
