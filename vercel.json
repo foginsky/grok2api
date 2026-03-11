@@ -8,8 +8,11 @@
     "DATA_DIR": "/tmp/data"
   },
   "functions": {
-    "main.py": {
-      "includeFiles": "app/static/**"
+    "api/index.py": {
+      "includeFiles": [
+        "config.defaults.toml",
+        "app/**"
+      ]
     }
   }
 }
