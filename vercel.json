@@ -6,5 +6,11 @@
     "LOG_LEVEL": "INFO",
     "LOG_FILE_ENABLED": "false",
     "DATA_DIR": "/tmp/data"
-  }
+  },
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/index.py"
+    }
+  ]
 }
