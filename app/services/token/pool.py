@@ -28,7 +28,7 @@ class TokenPool:
         """获取 Token"""
         return self._tokens.get(token_str)
 
-    def select(self, exclude: set = None) -> Optional[TokenInfo]:
+    def select(self, exclude: set | None = None) -> Optional[TokenInfo]:
         """
         选择一个可用 Token
         策略:
@@ -40,7 +40,8 @@ class TokenPool:
         available = [
             t
             for t in self._tokens.values()
-            if t.status == TokenStatus.ACTIVE and t.quota > 0
+            if t.status == TokenStatus.ACTIVE
+            and t.quota > 0
             and (not exclude or t.token not in exclude)
         ]
 

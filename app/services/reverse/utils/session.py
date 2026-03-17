@@ -5,8 +5,8 @@ Resettable session wrapper for reverse requests.
 import asyncio
 from typing import Any, Iterable, Optional
 
-from curl_cffi.const import CurlOpt
 from curl_cffi.requests import AsyncSession
+from curl_cffi.const import CurlOpt
 
 from app.core.config import get_config
 from app.core.logger import logger
@@ -14,7 +14,7 @@ from app.core.logger import logger
 
 def _should_skip_proxy_ssl() -> bool:
     return bool(get_config("proxy.skip_proxy_ssl_verify")) and bool(
-        get_config("proxy.base_proxy_url") or get_config("proxy.asset_proxy_url")
+        get_config("proxy.base_proxy_url")
     )
 
 
@@ -48,7 +48,7 @@ class ResettableSession:
     def _create_session(self) -> AsyncSession:
         kwargs = dict(self._session_kwargs)
         if self._skip_proxy_ssl:
-            opts = dict(kwargs.get("curl_options", {}))
+            opts = kwargs.get("curl_options", {})
             opts[CurlOpt.PROXY_SSL_VERIFYPEER] = 0
             opts[CurlOpt.PROXY_SSL_VERIFYHOST] = 0
             kwargs["curl_options"] = opts

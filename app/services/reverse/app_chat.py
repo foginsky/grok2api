@@ -91,9 +91,13 @@ class AppChatReverse:
             "toolOverrides": tool_overrides or {},
         }
 
+        if model == "grok-420":
+            payload["enable420"] = True
+
         if model_config_override:
             payload["responseMetadata"]["modelConfigOverride"] = model_config_override
 
+        logger.debug(f"AppChatReverse payload: {payload}")
         return payload
 
     @staticmethod
@@ -110,7 +114,7 @@ class AppChatReverse:
         image_generation_count: int | None = None,
     ) -> Any:
         """Send app chat request to Grok.
-        
+
         Args:
             session: AsyncSession, the session to use for the request.
             token: str, the SSO token.
@@ -164,8 +168,7 @@ class AppChatReverse:
                 float(get_config("image.timeout") or 60.0),
             )
             connect_timeout = float(
-                get_config("chat.connect_timeout")
-                or min(max(base_timeout, 1.0), 12.0)
+                get_config("chat.connect_timeout") or min(max(base_timeout, 1.0), 12.0)
             )
             # curl_cffi 支持 (connect_timeout, read_timeout)；流读取阶段仍由上层 idle timeout 控制。
             timeout = (connect_timeout, base_timeout)
@@ -191,7 +194,6 @@ class AppChatReverse:
                     raise
 
                 if response.status_code != 200:
-
                     # Get response content
                     content = ""
                     try:

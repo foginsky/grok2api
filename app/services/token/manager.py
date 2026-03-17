@@ -194,7 +194,9 @@ class TokenManager:
             if self._dirty:
                 self._schedule_save()
 
-    def get_token(self, pool_name: str = "ssoBasic", exclude: set = None) -> Optional[str]:
+    def get_token(
+        self, pool_name: str = "ssoBasic", exclude: Optional[set] = None
+    ) -> Optional[str]:
         """
         获取可用 Token
 
@@ -408,15 +410,26 @@ class TokenManager:
 
         except Exception as e:
             if isinstance(e, UpstreamException):
-                status = None
-                if e.details and "status" in e.details:
-                    status = e.details["status"]
-                else:
-                    status = getattr(e, "status_code", None)
+                status = (
+                    e.details.get("status")
+                    if e.details
+                    else getattr(e, "status_code", None)
+                )
+                is_token_expired = (
+                    e.details.get("is_token_expired", False) if e.details else False
+                )
+
+                if status == 401 and is_token_expired:
+                    await self.record_fail(token_str, status, "rate_limits_auth_failed")
+                    logger.warning(
+                        f"Token {_token_tag(token_str)}: API sync failed (Confirmed Token Expired), skipping fallback"
+                    )
+                    return False
+
                 if status == 401:
                     await self.record_fail(token_str, status, "rate_limits_auth_failed")
             logger.warning(
-                f"Token {raw_token[:10]}...: API sync failed, fallback to local ({e})"
+                f"Token {_token_tag(token_str)}: API sync failed, fallback to local ({e})"
             )
 
         # 降级：本地预估扣费

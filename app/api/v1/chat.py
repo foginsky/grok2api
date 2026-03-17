@@ -24,6 +24,7 @@ from app.services.token import get_token_manager
 from app.core.config import get_config
 from app.core.exceptions import ValidationException, AppException, ErrorType
 from app.core.logger import logger
+from app.services.grok.utils.response import wrap_image_content
 
 
 class MessageItem(BaseModel):
@@ -648,6 +649,13 @@ def validate_request(request: ChatCompletionRequest):
     # video 验证
     if model_info and model_info.is_video:
         config = request.video_config or VideoConfig()
+        _, image_urls = _extract_prompt_images(request.messages)
+        if len(image_urls) > 7:
+            raise ValidationException(
+                message="Too many image_url references for video. Maximum is 7.",
+                param="messages",
+                code="invalid_image_count",
+            )
         effective_stream = (
             request.stream if request.stream is not None else get_config("app.stream")
         )
@@ -909,7 +917,10 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         )
 
         urls = result.data if isinstance(result.data, list) else []
-        content = "\n".join([u for u in urls if isinstance(u, str) and u])
+        content = "\n".join([
+            wrap_image_content(str(u).strip(), response_format)
+            for u in urls if isinstance(u, str) and u
+        ])
         if want_stream:
             return _stream_chat_completion(
                 model=request.model, content=content, created=created
@@ -967,7 +978,10 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         )
 
         urls = result.data if isinstance(result.data, list) else []
-        content = "\n".join([u for u in urls if isinstance(u, str) and u])
+        content = "\n".join([
+            wrap_image_content(str(u).strip(), response_format)
+            for u in urls if isinstance(u, str) and u
+        ])
         if want_stream:
             return _stream_chat_completion(
                 model=request.model, content=content, created=created
