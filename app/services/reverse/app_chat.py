@@ -102,7 +102,7 @@ class AppChatReverse:
 
     @staticmethod
     async def request(
-        session: AsyncSession,
+        session: Any,
         token: str,
         message: str,
         model: str,

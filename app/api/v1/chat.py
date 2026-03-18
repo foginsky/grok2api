@@ -3,6 +3,7 @@ Chat Completions API 路由
 """
 
 import asyncio
+import inspect
 from typing import Any, Dict, List, Optional, Union
 import base64
 import binascii
@@ -47,6 +48,10 @@ class VideoConfig(BaseModel):
     video_length: Optional[int] = Field(6, description="视频时长(秒): 6 / 10 / 15")
     resolution_name: Optional[str] = Field("480p", description="视频分辨率: 480p, 720p")
     preset: Optional[str] = Field("custom", description="风格预设: fun, normal, spicy")
+    single_image_mode: Optional[str] = Field(
+        "frame",
+        description="单图模式: frame=作为首帧, reference=作为参考图",
+    )
     n: Optional[int] = Field(None, ge=1, le=4, description="生成数量 (1-4，仅非流式)")
     concurrent: Optional[int] = Field(
         1, ge=1, le=4, description="并发视频数 (1-4，仅非流式)"
@@ -94,6 +99,22 @@ class ChatCompletionRequest(BaseModel):
     providerOptions: Optional[Dict[str, Any]] = Field(
         None, description="Provider-specific options (camelCase)"
     )
+
+
+def _default_video_config() -> VideoConfig:
+    return VideoConfig(
+        aspect_ratio="3:2",
+        video_length=6,
+        resolution_name="480p",
+        preset="custom",
+        single_image_mode="frame",
+        n=None,
+        concurrent=1,
+    )
+
+
+def _default_image_config() -> ImageConfig:
+    return ImageConfig(n=1, size="1024x1024", response_format=None)
 
 
 VALID_ROLES = {"developer", "system", "user", "assistant", "tool"}
@@ -585,7 +606,7 @@ def validate_request(request: ChatCompletionRequest):
                 param="messages",
                 code="empty_prompt",
             )
-        image_conf = request.image_config or ImageConfig()
+        image_conf = request.image_config or _default_image_config()
         n = image_conf.n or 1
         if not (1 <= n <= 10):
             raise ValidationException(
@@ -635,7 +656,7 @@ def validate_request(request: ChatCompletionRequest):
                 param="messages",
                 code="invalid_image_count",
             )
-        image_conf = request.image_config or ImageConfig()
+        image_conf = request.image_config or _default_image_config()
         n = image_conf.n or 1
         if n != 1:
             raise ValidationException(
@@ -648,7 +669,7 @@ def validate_request(request: ChatCompletionRequest):
 
     # video 验证
     if model_info and model_info.is_video:
-        config = request.video_config or VideoConfig()
+        config = request.video_config or _default_video_config()
         _, image_urls = _extract_prompt_images(request.messages)
         if len(image_urls) > 7:
             raise ValidationException(
@@ -700,6 +721,16 @@ def validate_request(request: ChatCompletionRequest):
                 param="video_config.preset",
                 code="invalid_preset",
             )
+        normalized_single_image_mode = (
+            str(config.single_image_mode or "frame").strip().lower()
+        )
+        if normalized_single_image_mode not in ("frame", "reference"):
+            raise ValidationException(
+                message="single_image_mode must be one of ['frame', 'reference']",
+                param="video_config.single_image_mode",
+                code="invalid_single_image_mode",
+            )
+        config.single_image_mode = normalized_single_image_mode
         resolved_video_n = None
         if config.n is not None:
             resolved_video_n = config.n
@@ -736,7 +767,9 @@ async def _close_async_stream(stream_obj: Any):
     aclose = getattr(stream_obj, "aclose", None)
     if callable(aclose):
         try:
-            await aclose()
+            result = aclose()
+            if inspect.isawaitable(result):
+                await result
         except Exception:
             pass
 
@@ -917,10 +950,13 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         )
 
         urls = result.data if isinstance(result.data, list) else []
-        content = "\n".join([
-            wrap_image_content(str(u).strip(), response_format)
-            for u in urls if isinstance(u, str) and u
-        ])
+        content = "\n".join(
+            [
+                wrap_image_content(str(u).strip(), response_format)
+                for u in urls
+                if isinstance(u, str) and u
+            ]
+        )
         if want_stream:
             return _stream_chat_completion(
                 model=request.model, content=content, created=created
@@ -978,10 +1014,13 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         )
 
         urls = result.data if isinstance(result.data, list) else []
-        content = "\n".join([
-            wrap_image_content(str(u).strip(), response_format)
-            for u in urls if isinstance(u, str) and u
-        ])
+        content = "\n".join(
+            [
+                wrap_image_content(str(u).strip(), response_format)
+                for u in urls
+                if isinstance(u, str) and u
+            ]
+        )
         if want_stream:
             return _stream_chat_completion(
                 model=request.model, content=content, created=created
@@ -993,7 +1032,12 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
     if model_info and model_info.is_video:
         try:
             # 提取视频配置 (默认值在 Pydantic 模型中处理)
-            v_conf = request.video_config or VideoConfig()
+            v_conf = request.video_config or _default_video_config()
+            video_aspect_ratio = str(v_conf.aspect_ratio or "3:2")
+            video_length = int(v_conf.video_length or 6)
+            video_resolution = str(v_conf.resolution_name or "480p")
+            video_preset = str(v_conf.preset or "custom")
+            single_image_mode = str(v_conf.single_image_mode or "frame").strip().lower()
             video_concurrent = int(v_conf.n or request.n or v_conf.concurrent or 1)
             if video_concurrent <= 1:
                 result = await VideoService.completions(
@@ -1001,10 +1045,11 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     messages=[msg.model_dump() for msg in request.messages],
                     stream=request.stream,
                     reasoning_effort=request.reasoning_effort,
-                    aspect_ratio=v_conf.aspect_ratio,
-                    video_length=v_conf.video_length,
-                    resolution=v_conf.resolution_name,
-                    preset=v_conf.preset,
+                    aspect_ratio=video_aspect_ratio,
+                    video_length=video_length,
+                    resolution=video_resolution,
+                    preset=video_preset,
+                    single_image_mode=single_image_mode,
                 )
             else:
                 messages_dump = [msg.model_dump() for msg in request.messages]
@@ -1015,10 +1060,11 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                         messages=messages_dump,
                         stream=False,
                         reasoning_effort=request.reasoning_effort,
-                        aspect_ratio=v_conf.aspect_ratio,
-                        video_length=v_conf.video_length,
-                        resolution=v_conf.resolution_name,
-                        preset=v_conf.preset,
+                        aspect_ratio=video_aspect_ratio,
+                        video_length=video_length,
+                        resolution=video_resolution,
+                        preset=video_preset,
+                        single_image_mode=single_image_mode,
                     )
                     if not isinstance(single, dict):
                         raise ValidationException(
@@ -1086,9 +1132,11 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             messages=[msg.model_dump() for msg in request.messages],
             stream=request.stream,
             reasoning_effort=request.reasoning_effort,
-            temperature=request.temperature,
-            top_p=request.top_p,
-            tools=request.tools,
+            temperature=float(
+                request.temperature if request.temperature is not None else 0.8
+            ),
+            top_p=float(request.top_p if request.top_p is not None else 0.95),
+            tools=request.tools or [],
             tool_choice=request.tool_choice,
             parallel_tool_calls=(
                 True

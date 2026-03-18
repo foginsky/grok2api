@@ -13,11 +13,13 @@ from app.services.reverse.utils.headers import build_headers
 from app.services.reverse.utils.retry import retry_on_status
 
 VIDEO_UPSCALE_API = "https://grok.com/rest/media/video/upscale"
+
+
 class VideoUpscaleReverse:
     """/rest/media/video/upscale reverse interface."""
 
     @staticmethod
-    async def request(session: AsyncSession, token: str, video_id: str) -> Any:
+    async def request(session: Any, token: str, video_id: str) -> Any:
         """Upscale video (image upscaling endpoint) in Grok.
 
         Args:
@@ -38,7 +40,7 @@ class VideoUpscaleReverse:
                 cookie_token=token,
                 content_type="application/json",
                 origin="https://grok.com",
-                referer=f"https://grok.com/imagine/post/{video_id}"
+                referer=f"https://grok.com/imagine/post/{video_id}",
             )
 
             # Build payload
@@ -88,7 +90,9 @@ class VideoUpscaleReverse:
                     status = getattr(e, "status_code", None)
                 if status == 401:
                     try:
-                        await TokenService.record_fail(token, status, "video_upscale_auth_failed")
+                        await TokenService.record_fail(
+                            token, status, "video_upscale_auth_failed"
+                        )
                     except Exception:
                         pass
                 raise

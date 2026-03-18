@@ -19,7 +19,7 @@ class AssetsListReverse:
     """/rest/assets reverse interface."""
 
     @staticmethod
-    async def request(session: AsyncSession, token: str, params: Dict[str, Any]) -> Any:
+    async def request(session: Any, token: str, params: Dict[str, Any]) -> Any:
         """List assets from Grok.
 
         Args:
@@ -85,7 +85,9 @@ class AssetsListReverse:
                     status = getattr(e, "status_code", None)
                 if status == 401:
                     try:
-                        await TokenService.record_fail(token, status, "assets_list_auth_failed")
+                        await TokenService.record_fail(
+                            token, status, "assets_list_auth_failed"
+                        )
                     except Exception:
                         pass
                 raise

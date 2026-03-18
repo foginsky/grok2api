@@ -17,6 +17,9 @@ from app.services.reverse.utils.headers import build_headers
 from app.services.reverse.utils.retry import retry_on_status
 
 MEDIA_POST_API = "https://grok.com/rest/media/post/create"
+MEDIA_POST_GET_API = "https://grok.com/rest/media/post/get"
+
+
 class MediaPostReverse:
     """/rest/media/post/create reverse interface."""
 
@@ -31,7 +34,11 @@ class MediaPostReverse:
 
     @staticmethod
     async def _urllib_post(
-        url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int, proxy_url: str
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: int,
+        proxy_url: str,
     ) -> "MediaPostReverse._SimpleResponse":
         body = json.dumps(payload).encode("utf-8")
         opener = None
@@ -46,14 +53,16 @@ class MediaPostReverse:
                 with opener.open(req, timeout=timeout) as resp:
                     status = int(getattr(resp, "status", 200) or 200)
                     raw_headers = {
-                        str(k).lower(): str(v) for k, v in dict(resp.headers.items()).items()
+                        str(k).lower(): str(v)
+                        for k, v in dict(resp.headers.items()).items()
                     }
                     text = resp.read().decode("utf-8", errors="replace")
                     return status, raw_headers, text
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 status = int(getattr(resp, "status", 200) or 200)
                 raw_headers = {
-                    str(k).lower(): str(v) for k, v in dict(resp.headers.items()).items()
+                    str(k).lower(): str(v)
+                    for k, v in dict(resp.headers.items()).items()
                 }
                 text = resp.read().decode("utf-8", errors="replace")
                 return status, raw_headers, text
@@ -67,7 +76,7 @@ class MediaPostReverse:
 
     @staticmethod
     async def request(
-        session: AsyncSession,
+        session: Any,
         token: str,
         mediaType: str,
         mediaUrl: str,
@@ -180,7 +189,9 @@ class MediaPostReverse:
                     status = getattr(e, "status_code", None)
                 if status == 401:
                     try:
-                        await TokenService.record_fail(token, status, "media_post_auth_failed")
+                        await TokenService.record_fail(
+                            token, status, "media_post_auth_failed"
+                        )
                     except Exception:
                         pass
                 raise
@@ -192,6 +203,107 @@ class MediaPostReverse:
             )
             raise UpstreamException(
                 message=f"MediaPostReverse: Media post create failed, {str(e)}",
+                details={"status": 502, "error": str(e)},
+            )
+
+    @staticmethod
+    async def get(session: Any, token: str, post_id: str) -> Any:
+        """Get media post metadata from Grok."""
+        try:
+            base_proxy = get_config("proxy.base_proxy_url")
+            proxies = {"http": base_proxy, "https": base_proxy} if base_proxy else None
+            proxy_url = base_proxy
+
+            headers = build_headers(
+                cookie_token=token,
+                content_type="application/json",
+                origin="https://grok.com",
+                referer="https://grok.com",
+            )
+
+            payload = {"id": str(post_id or "").strip()}
+            timeout = get_config("video.timeout")
+            browser = get_config("proxy.browser")
+
+            async def _do_request():
+                try:
+                    response = await session.post(
+                        MEDIA_POST_GET_API,
+                        headers=headers,
+                        json=payload,
+                        timeout=timeout,
+                        proxies=proxies,
+                        impersonate=browser,
+                    )
+                except Exception as first_err:
+                    logger.warning(
+                        "MediaPostReverse get primary request failed, fallback direct: "
+                        f"error={first_err}"
+                    )
+                    try:
+                        response = await session.post(
+                            MEDIA_POST_GET_API,
+                            headers=headers,
+                            json=payload,
+                            timeout=timeout,
+                        )
+                    except Exception as second_err:
+                        logger.warning(
+                            "MediaPostReverse get direct curl request failed, "
+                            f"fallback urllib: error={second_err}"
+                        )
+                        response = await MediaPostReverse._urllib_post(
+                            url=MEDIA_POST_GET_API,
+                            headers=headers,
+                            payload=payload,
+                            timeout=timeout,
+                            proxy_url=proxy_url,
+                        )
+
+                if response.status_code != 200:
+                    content = ""
+                    try:
+                        content = (response.text or "").strip().replace("\n", " ")
+                    except Exception:
+                        pass
+                    if len(content) > 300:
+                        content = f"{content[:300]}...(len={len(content)})"
+                    logger.error(
+                        "MediaPostReverse: Media post get failed, "
+                        f"status={response.status_code}, body={content or '-'}",
+                        extra={"error_type": "UpstreamException"},
+                    )
+                    raise UpstreamException(
+                        message=f"MediaPostReverse: Media post get failed, {response.status_code}",
+                        details={"status": response.status_code, "body": content},
+                    )
+
+                return response
+
+            return await retry_on_status(_do_request)
+
+        except Exception as e:
+            if isinstance(e, UpstreamException):
+                status = None
+                if e.details and "status" in e.details:
+                    status = e.details["status"]
+                else:
+                    status = getattr(e, "status_code", None)
+                if status == 401:
+                    try:
+                        await TokenService.record_fail(
+                            token, status, "media_post_get_auth_failed"
+                        )
+                    except Exception:
+                        pass
+                raise
+
+            logger.error(
+                f"MediaPostReverse: Media post get failed, {str(e)}",
+                extra={"error_type": type(e).__name__},
+            )
+            raise UpstreamException(
+                message=f"MediaPostReverse: Media post get failed, {str(e)}",
                 details={"status": 502, "error": str(e)},
             )
 

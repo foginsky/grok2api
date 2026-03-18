@@ -50,7 +50,10 @@ def _public_video_error_payload(exc: Exception) -> dict:
         or '"code":3' in text
         or "'code': 3" in text
     ):
-        return {"error": "视频生成被拒绝，请调整提示词或素材后重试", "code": "video_rejected"}
+        return {
+            "error": "视频生成被拒绝，请调整提示词或素材后重试",
+            "code": "video_rejected",
+        }
     if (
         "tls connect error" in text
         or "timed out" in text
@@ -61,7 +64,10 @@ def _public_video_error_payload(exc: Exception) -> dict:
         or "network" in text
         or "proxy" in text
     ):
-        return {"error": "视频生成失败：网络连接异常，请稍后重试", "code": "video_network_error"}
+        return {
+            "error": "视频生成失败：网络连接异常，请稍后重试",
+            "code": "video_network_error",
+        }
     return {"error": "视频生成失败，请稍后重试", "code": "video_failed"}
 
 
@@ -113,7 +119,9 @@ async def _new_session(
     image_url: Optional[str],
     parent_post_id: Optional[str],
     source_image_url: Optional[str],
+    reference_items: Optional[List[Dict[str, str]]],
     reasoning_effort: Optional[str],
+    single_image_mode: str = "frame",
     # 视频延长相关
     is_video_extension: bool = False,
     extend_post_id: Optional[str] = None,
@@ -135,7 +143,9 @@ async def _new_session(
             "image_url": image_url,
             "parent_post_id": parent_post_id,
             "source_image_url": source_image_url,
+            "reference_items": reference_items or [],
             "reasoning_effort": reasoning_effort,
+            "single_image_mode": single_image_mode,
             "is_video_extension": is_video_extension,
             "extend_post_id": extend_post_id,
             "video_extension_start_time": video_extension_start_time,
@@ -210,16 +220,116 @@ def _validate_parent_post_id(parent_post_id: str) -> str:
     return value
 
 
+def _normalize_string_list(values: Optional[List[str]]) -> List[str]:
+    if not values:
+        return []
+    normalized: List[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _build_reference_items(data: "VideoStartRequest") -> List[Dict[str, str]]:
+    items: List[Dict[str, str]] = []
+
+    for raw in data.reference_items or []:
+        if not isinstance(raw, dict):
+            continue
+        parent_post_id = _validate_parent_post_id(str(raw.get("parent_post_id") or ""))
+        image_url = str(raw.get("image_url") or "").strip()
+        source_image_url = str(raw.get("source_image_url") or "").strip()
+        mention_alias = str(raw.get("mention_alias") or "").strip()
+        if image_url:
+            _validate_image_url(image_url)
+        if source_image_url:
+            _validate_image_url(source_image_url)
+        if parent_post_id or image_url or source_image_url:
+            items.append(
+                {
+                    "parent_post_id": parent_post_id,
+                    "image_url": image_url,
+                    "source_image_url": source_image_url,
+                    "mention_alias": mention_alias,
+                }
+            )
+
+    for value in _normalize_string_list(data.image_references):
+        _validate_image_url(value)
+        items.append(
+            {"parent_post_id": "", "image_url": value, "source_image_url": value}
+        )
+
+    for value in _normalize_string_list(data.source_image_urls):
+        _validate_image_url(value)
+        items.append(
+            {"parent_post_id": "", "image_url": value, "source_image_url": value}
+        )
+
+    for value in _normalize_string_list(data.parent_post_ids):
+        items.append(
+            {
+                "parent_post_id": _validate_parent_post_id(value),
+                "image_url": "",
+                "source_image_url": "",
+            }
+        )
+
+    single_parent = _validate_parent_post_id(data.parent_post_id or "")
+    single_image_url = (data.image_url or "").strip()
+    single_source_image_url = (data.source_image_url or "").strip()
+    if single_image_url:
+        _validate_image_url(single_image_url)
+    if single_source_image_url:
+        _validate_image_url(single_source_image_url)
+    if single_parent or single_image_url or single_source_image_url:
+        items.insert(
+            0,
+            {
+                "parent_post_id": single_parent,
+                "image_url": single_image_url,
+                "source_image_url": single_source_image_url,
+            },
+        )
+
+    deduped: List[Dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        key = (
+            str(item.get("parent_post_id") or "").strip(),
+            str(item.get("image_url") or "").strip(),
+            str(item.get("source_image_url") or "").strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(
+            {
+                "parent_post_id": key[0],
+                "image_url": key[1],
+                "source_image_url": key[2],
+                "mention_alias": str(item.get("mention_alias") or "").strip(),
+            }
+        )
+    return deduped
+
+
 class VideoStartRequest(BaseModel):
     prompt: Optional[str] = ""
     aspect_ratio: Optional[str] = "3:2"
     video_length: Optional[int] = 6
     resolution_name: Optional[str] = "480p"
     preset: Optional[str] = "normal"
+    single_image_mode: Optional[str] = "frame"
     concurrent: Optional[int] = Field(1, ge=1, le=4)
     image_url: Optional[str] = None
     parent_post_id: Optional[str] = None
     source_image_url: Optional[str] = None
+    image_references: Optional[List[str]] = None
+    parent_post_ids: Optional[List[str]] = None
+    source_image_urls: Optional[List[str]] = None
+    reference_items: Optional[List[Dict[str, Any]]] = None
     reasoning_effort: Optional[str] = None
     edit_context: Optional[Dict[str, Any]] = None
     # 视频延长相关字段
@@ -263,18 +373,39 @@ async def public_video_start(data: VideoStartRequest):
         )
     concurrent = int(data.concurrent or 1)
     if concurrent < 1 or concurrent > 4:
-        raise HTTPException(status_code=400, detail="concurrent must be between 1 and 4")
+        raise HTTPException(
+            status_code=400, detail="concurrent must be between 1 and 4"
+        )
 
-    image_url = (data.image_url or "").strip() or None
-    if image_url:
-        _validate_image_url(image_url)
-    parent_post_id = _validate_parent_post_id(data.parent_post_id or "")
-    source_image_url = (data.source_image_url or "").strip() or None
-    if parent_post_id:
-        # parentPostId 链路强制使用 imagine-public，避免误用 assets.grok.com。
-        source_image_url = _build_imagine_public_url(parent_post_id)
-    elif source_image_url:
-        _validate_image_url(source_image_url)
+    single_image_mode = str(data.single_image_mode or "frame").strip().lower()
+    if single_image_mode not in ("frame", "reference"):
+        raise HTTPException(
+            status_code=400,
+            detail="single_image_mode must be one of ['frame','reference']",
+        )
+
+    reference_items = _build_reference_items(data)
+    if len(reference_items) > 7:
+        raise HTTPException(status_code=400, detail="最多支持 7 张参考图")
+    parent_post_refs = [item for item in reference_items if item.get("parent_post_id")]
+    parent_post_id = (
+        str(parent_post_refs[0].get("parent_post_id") or "").strip()
+        if parent_post_refs
+        else ""
+    )
+    pure_image_refs = [
+        item for item in reference_items if not item.get("parent_post_id")
+    ]
+    image_url = (
+        str(pure_image_refs[0].get("image_url") or "").strip() or None
+        if pure_image_refs
+        else None
+    )
+    source_image_url = (
+        str(pure_image_refs[0].get("source_image_url") or "").strip() or None
+        if pure_image_refs
+        else None
+    )
 
     # 视频延长参数解析
     is_video_extension = bool(data.is_video_extension)
@@ -282,7 +413,9 @@ async def public_video_start(data: VideoStartRequest):
     video_extension_start_time = data.video_extension_start_time
     original_post_id = _validate_parent_post_id(data.original_post_id or "")
     file_attachment_id = _validate_parent_post_id(data.file_attachment_id or "")
-    stitch_with_extend = bool(data.stitch_with_extend if data.stitch_with_extend is not None else True)
+    stitch_with_extend = bool(
+        data.stitch_with_extend if data.stitch_with_extend is not None else True
+    )
 
     if is_video_extension:
         # 视频延长模式校验
@@ -296,7 +429,7 @@ async def public_video_start(data: VideoStartRequest):
                 status_code=400,
                 detail="video_extension_start_time must be a non-negative number",
             )
-        
+
         # 官方服务端对延长视频容易触发风控，在此强制固定并发为1
         concurrent = 1
 
@@ -308,11 +441,12 @@ async def public_video_start(data: VideoStartRequest):
             f"file_attachment_id={file_attachment_id}"
         )
     else:
-        if parent_post_id and image_url:
+        if parent_post_id and image_url and len(reference_items) <= 1:
             raise HTTPException(
-                status_code=400, detail="image_url and parent_post_id cannot be used together"
+                status_code=400,
+                detail="image_url and parent_post_id cannot be used together",
             )
-        if not prompt and not image_url and not parent_post_id:
+        if not prompt and not reference_items:
             raise HTTPException(
                 status_code=400,
                 detail="Prompt cannot be empty when no image_url/parent_post_id is provided",
@@ -352,7 +486,9 @@ async def public_video_start(data: VideoStartRequest):
             image_url,
             parent_post_id,
             source_image_url,
+            reference_items,
             reasoning_effort,
+            single_image_mode=single_image_mode,
             is_video_extension=is_video_extension,
             extend_post_id=extend_post_id,
             video_extension_start_time=video_extension_start_time,
@@ -368,8 +504,10 @@ async def public_video_start(data: VideoStartRequest):
         "concurrent": concurrent,
         "aspect_ratio": aspect_ratio,
         "parent_post_id": parent_post_id,
+        "reference_count": len(reference_items),
         "extend_post_id": extend_post_id,
         "file_attachment_id": file_attachment_id or "",
+        "single_image_mode": single_image_mode,
     }
 
 
@@ -389,7 +527,11 @@ async def public_video_sse(request: Request, task_id: str = Query("")):
     source_image_url = str(session.get("source_image_url") or "").strip() or None
     if parent_post_id:
         source_image_url = _build_imagine_public_url(parent_post_id)
+    reference_items = session.get("reference_items") or []
     reasoning_effort = session.get("reasoning_effort")
+    single_image_mode = (
+        str(session.get("single_image_mode") or "frame").strip() or "frame"
+    )
 
     async def event_stream():
         try:
@@ -440,8 +582,12 @@ async def public_video_sse(request: Request, task_id: str = Query("")):
             is_video_extension = bool(session.get("is_video_extension"))
             extend_post_id = str(session.get("extend_post_id") or "").strip() or None
             video_extension_start_time = session.get("video_extension_start_time")
-            original_post_id = str(session.get("original_post_id") or "").strip() or None
-            file_attachment_id = str(session.get("file_attachment_id") or "").strip() or None
+            original_post_id = (
+                str(session.get("original_post_id") or "").strip() or None
+            )
+            file_attachment_id = (
+                str(session.get("file_attachment_id") or "").strip() or None
+            )
             stitch_with_extend = bool(session.get("stitch_with_extend", True))
 
             stream = await VideoService.completions(
@@ -455,13 +601,27 @@ async def public_video_sse(request: Request, task_id: str = Query("")):
                 preset=preset,
                 parent_post_id=parent_post_id or None,
                 extend_post_id=extend_post_id if is_video_extension else None,
-                video_extension_start_time=video_extension_start_time if is_video_extension else None,
+                video_extension_start_time=video_extension_start_time
+                if is_video_extension
+                else None,
                 original_post_id=original_post_id if is_video_extension else None,
                 file_attachment_id=file_attachment_id if is_video_extension else None,
                 stitch_with_extend=stitch_with_extend,
                 source_image_url=source_image_url,
+                reference_items=reference_items,
+                single_image_mode=single_image_mode,
                 preferred_token=preferred_token,
             )
+
+            if isinstance(stream, dict):
+                payload = _public_video_error_payload(
+                    AppException(
+                        message="Video stream did not start", code="video_failed"
+                    )
+                )
+                yield f"data: {orjson.dumps(payload).decode()}\n\n"
+                yield "data: [DONE]\n\n"
+                return
 
             async for chunk in stream:
                 if await request.is_disconnected():

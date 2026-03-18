@@ -20,10 +20,15 @@
   const editFrameIndex = document.getElementById('editFrameIndex');
   const editTimestampMs = document.getElementById('editTimestampMs');
   const editExtendPostId = document.getElementById('editExtendPostId');
+  const editVideoName = document.getElementById('editVideoName');
+  const editVideoNameCard = document.getElementById('editVideoNameCard');
   const editPromptInput = document.getElementById('editPromptInput');
+  const editLengthSelect = document.getElementById('editLengthSelect');
   const spliceBtn = document.getElementById('spliceBtn');
 
   const promptInput = document.getElementById('promptInput');
+  const promptRichInput = document.getElementById('promptRichInput');
+  const referenceMentionMenu = document.getElementById('referenceMentionMenu');
   const imageUrlInput = document.getElementById('imageUrlInput');
   const parentPostInput = document.getElementById('parentPostInput');
   const applyParentBtn = document.getElementById('applyParentBtn');
@@ -36,6 +41,7 @@
   const resolutionSelect = document.getElementById('resolutionSelect');
   const presetSelect = document.getElementById('presetSelect');
   const concurrentSelect = document.getElementById('concurrentSelect');
+  const singleImageModeSelect = document.getElementById('singleImageModeSelect');
   const statusText = document.getElementById('statusText');
   const progressBar = document.getElementById('progressBar');
   const progressFill = document.getElementById('progressFill');
@@ -49,9 +55,15 @@
   const videoEmpty = document.getElementById('videoEmpty');
   const videoStage = document.getElementById('videoStage');
   const referencePreview = document.getElementById('referencePreview');
-  const referencePreviewImg = document.getElementById('referencePreviewImg');
-  const referencePreviewMeta = document.getElementById('referencePreviewMeta');
+  const referenceStrip = document.getElementById('referenceStrip');
+  const currentGallery = document.getElementById('currentGallery');
+  const previewEmpty = document.getElementById('previewEmpty');
+  const currentParentId = document.getElementById('currentParentId');
+  const currentMode = document.getElementById('currentMode');
   const refDropZone = document.getElementById('refDropZone');
+  const referenceLightbox = document.getElementById('referenceLightbox');
+  const referenceLightboxImg = document.getElementById('referenceLightboxImg');
+  const closeReferenceLightboxBtn = document.getElementById('closeReferenceLightboxBtn');
   const historyCount = document.getElementById('historyCount');
   const editPreviewWrap = editVideo ? editVideo.closest('.edit-preview-wrap') : null;
 
@@ -60,13 +72,48 @@
   let isRunning = false;
   let hasRunError = false;
   let startAt = 0;
-  let fileDataUrl = '';
+  const REFERENCE_LIMIT = 7;
+  let referenceImages = [];
+  let currentModeValue = 'upload';
+  let selectedReferenceId = '';
+  let activeMentionIndex = -1;
+  let isSyncingPromptEditor = false;
+  let lastMentionRange = null;
+  let lastMentionContext = null;
+
+  function getReferenceMentionLabel(index) {
+    return `Image ${index + 1}`;
+  }
+
+  function enrichReferenceItem(item, index) {
+    const normalized = {
+      id: item.id || makeReferenceId('ref'),
+      previewUrl: String(item.previewUrl || item.url || item.sourceUrl || '').trim(),
+      sourceUrl: String(item.sourceUrl || item.url || item.previewUrl || '').trim(),
+      url: String(item.url || item.previewUrl || item.sourceUrl || '').trim(),
+      parentPostId: String(item.parentPostId || '').trim(),
+      name: String(item.name || '').trim(),
+      mentionLabel: String(item.mentionLabel || '').trim()
+    };
+    if (!normalized.mentionLabel) {
+      normalized.mentionLabel = getReferenceMentionLabel(index);
+    }
+    return normalized;
+  }
+
+  function refreshReferenceMentionLabels() {
+    referenceImages = referenceImages.map((item, index) => ({
+      ...item,
+      mentionLabel: getReferenceMentionLabel(index)
+    }));
+  }
   let elapsedTimer = null;
   let lastProgress = 0;
   let previewCount = 0;
   let refDragCounter = 0;
   let selectedVideoItemId = '';
   let selectedVideoUrl = '';
+  let selectedVideoMeta = {};
   let editingRound = 0;
   let editingBusy = false;
   let activeSpliceRun = null;
@@ -83,6 +130,8 @@
   let workspacePreviewSizeLocked = false;
   let workspaceLockedWidth = 0;
   let workspaceLockedHeight = 0;
+  let editVideoNameTapTimer = 0;
+  let editVideoNameTapCount = 0;
 
   function buildHistoryTitle(type, serial) {
     const n = Math.max(1, parseInt(String(serial || '1'), 10) || 1);
@@ -98,6 +147,143 @@
     if (typeof showToast === 'function') {
       showToast(message, type);
     }
+  }
+
+  function ensureRenameDialog() {
+    let overlay = document.getElementById('videoRenameDialog');
+    if (overlay) return overlay;
+    const style = document.createElement('style');
+    style.textContent = `
+      .video-rename-dialog-overlay {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(15, 23, 42, 0.45);
+        backdrop-filter: blur(8px);
+        z-index: 500;
+      }
+      .video-rename-dialog-overlay.hidden { display: none; }
+      .video-rename-dialog {
+        width: min(420px, calc(100vw - 32px));
+        border-radius: 16px;
+        border: 1px solid var(--border);
+        background: var(--video-surface, var(--bg));
+        color: var(--fg);
+        box-shadow: 0 24px 80px rgba(15, 23, 42, 0.28);
+        padding: 18px;
+      }
+      .video-rename-dialog-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--fg);
+      }
+      .video-rename-dialog-desc {
+        margin-top: 6px;
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--accents-5);
+      }
+      .video-rename-dialog-input {
+        width: 100%;
+        margin-top: 14px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: var(--accents-1);
+        color: var(--fg);
+        padding: 12px 14px;
+        outline: none;
+      }
+      .video-rename-dialog-input:focus {
+        border-color: var(--accents-5);
+        box-shadow: 0 0 0 3px rgba(127, 127, 127, 0.12);
+      }
+      .video-rename-dialog-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 16px;
+      }
+      html[data-theme='dark'] .video-rename-dialog {
+        background: #141b25;
+        border-color: #2b3440;
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+      }
+      html[data-theme='dark'] .video-rename-dialog-input {
+        background: #101722;
+        border-color: #2b3440;
+        color: #f5f7fb;
+      }
+    `;
+    document.head.appendChild(style);
+    overlay = document.createElement('div');
+    overlay.id = 'videoRenameDialog';
+    overlay.className = 'video-rename-dialog-overlay hidden';
+    overlay.innerHTML = `
+      <div class="video-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="videoRenameDialogTitle">
+        <div id="videoRenameDialogTitle" class="video-rename-dialog-title">重命名视频</div>
+        <div class="video-rename-dialog-desc">新的名称会写入本地元数据，并同步到历史视频、选择视频和缓存管理。</div>
+        <input id="videoRenameDialogInput" class="video-rename-dialog-input" type="text" maxlength="120" placeholder="输入视频名称">
+        <div class="video-rename-dialog-actions">
+          <button id="videoRenameDialogCancel" type="button" class="geist-button-outline">取消</button>
+          <button id="videoRenameDialogClear" type="button" class="geist-button-outline">恢复默认</button>
+          <button id="videoRenameDialogOk" type="button" class="geist-button">保存</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    return overlay;
+  }
+
+  function openRenameDialog(initialValue = '') {
+    const overlay = ensureRenameDialog();
+    const input = overlay.querySelector('#videoRenameDialogInput');
+    const okBtn = overlay.querySelector('#videoRenameDialogOk');
+    const clearBtn = overlay.querySelector('#videoRenameDialogClear');
+    const cancelBtn = overlay.querySelector('#videoRenameDialogCancel');
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (value) => {
+        if (done) return;
+        done = true;
+        overlay.classList.add('hidden');
+        overlay.removeEventListener('click', handleOverlayClick);
+        document.removeEventListener('keydown', handleKeydown, true);
+        okBtn.removeEventListener('click', handleOk);
+        clearBtn.removeEventListener('click', handleClear);
+        cancelBtn.removeEventListener('click', handleCancel);
+        resolve(value);
+      };
+      const handleOk = () => finish(String(input.value || '').trim());
+      const handleClear = () => finish('');
+      const handleCancel = () => finish(null);
+      const handleOverlayClick = (event) => {
+        if (event.target === overlay) finish(null);
+      };
+      const handleKeydown = (event) => {
+        if (overlay.classList.contains('hidden')) return;
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          finish(null);
+        } else if (event.key === 'Enter') {
+          event.preventDefault();
+          handleOk();
+        }
+      };
+      input.value = String(initialValue || '').trim();
+      overlay.classList.remove('hidden');
+      overlay.addEventListener('click', handleOverlayClick);
+      document.addEventListener('keydown', handleKeydown, true);
+      okBtn.addEventListener('click', handleOk);
+      clearBtn.addEventListener('click', handleClear);
+      cancelBtn.addEventListener('click', handleCancel);
+      window.setTimeout(() => {
+        input.focus();
+        input.select();
+      }, 0);
+    });
   }
 
   function formatMs(ms) {
@@ -159,11 +345,52 @@
     return `${raw.slice(0, 8)}...${raw.slice(-6)}`;
   }
 
+  function getCurrentEditVideoMeta() {
+    const item = getSelectedVideoItem();
+    const safeUrl = item
+      ? String(item.dataset.url || '').trim()
+      : String(selectedVideoUrl || '').trim();
+    return {
+      item,
+      url: safeUrl,
+      postId: item ? String(item.dataset.postId || '').trim() : String(selectedVideoMeta.postId || '').trim(),
+      shareLink: item ? String(item.dataset.shareLink || '').trim() : String(selectedVideoMeta.shareLink || '').trim(),
+      originalPostId: item ? String(item.dataset.originalPostId || '').trim() : String(selectedVideoMeta.originalPostId || '').trim(),
+      name: item ? String(item.dataset.name || '').trim() : String(selectedVideoMeta.name || '').trim(),
+      displayName: item ? String(item.dataset.displayName || '').trim() : String(selectedVideoMeta.displayName || '').trim(),
+      defaultTitle: item ? String(item.dataset.defaultTitle || '').trim() : String(selectedVideoMeta.defaultTitle || '').trim(),
+    };
+  }
+
+  function resolveEditVideoDisplayName(meta = {}) {
+    return String(
+      meta.displayName
+      || meta.defaultTitle
+      || meta.name
+      || meta.postId
+      || '-'
+    ).trim() || '-';
+  }
+
   function setEditMeta() {
     if (editFrameIndex) editFrameIndex.textContent = lockedFrameIndex >= 0 ? String(lockedFrameIndex) : '-';
     if (editTimestampMs) editTimestampMs.textContent = String(Math.max(0, Math.round(lockedTimestampMs)));
     if (editExtendPostId) editExtendPostId.textContent = shortHash(currentExtendPostId);
+    if (editVideoName) {
+      const meta = getCurrentEditVideoMeta();
+      editVideoName.textContent = resolveEditVideoDisplayName(meta);
+      const fullName = resolveEditVideoDisplayName(meta);
+      editVideoName.title = meta.url ? `${fullName}\n双击重命名` : '请先选择视频';
+      editVideoName.classList.toggle('opacity-60', !meta.url);
+      editVideoName.style.whiteSpace = 'nowrap';
+      editVideoName.style.overflow = 'hidden';
+      editVideoName.style.textOverflow = 'ellipsis';
+      editVideoName.style.maxWidth = '100%';
+      editVideoName.style.display = 'block';
+    }
   }
+
+  const UUID_RE = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g;
 
   // 从缓存视频文件名中提取 parentPostId
   // 文件名格式示例: users-xxx-generated-{postId}-generated_video_hd.mp4
@@ -171,11 +398,161 @@
     const s = String(name || '').trim();
     if (!s) return '';
     // 尝试 generated-{uuid}- 模式
-    const m = s.match(/generated-([0-9a-fA-F-]{32,36})-/);
+    const m = s.match(/generated-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})-/);
     if (m) return m[1];
     // 回退：匹配最后一个 UUID 格式
-    const allUuids = s.match(/[0-9a-fA-F-]{32,36}/g);
+    const allUuids = s.match(UUID_RE);
     return allUuids && allUuids.length ? allUuids[allUuids.length - 1] : '';
+  }
+
+  function extractPostIdFromShareLink(link) {
+    const text = String(link || '').trim();
+    if (!text) return '';
+    const match = text.match(/\/imagine\/post\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#]|$)/i);
+    return match ? match[1] : '';
+  }
+
+  function resolveVideoPostId(meta = {}) {
+    const directPostId = String(meta.postId || meta.post_id || '').trim();
+    if (directPostId) return directPostId;
+    const shareLinkPostId = extractPostIdFromShareLink(meta.shareLink || meta.share_link || '');
+    if (shareLinkPostId) return shareLinkPostId;
+    const originalPostId = String(meta.originalPostId || meta.original_post_id || '').trim();
+    if (originalPostId) return originalPostId;
+    const namePostId = extractPostIdFromFileName(meta.name || '');
+    if (namePostId) return namePostId;
+    return extractPostIdFromFileName(meta.url || '');
+  }
+
+  function resolveVideoRenameKey(meta = {}) {
+    return String(
+      meta.postId
+      || meta.post_id
+      || extractPostIdFromShareLink(meta.shareLink || meta.share_link || '')
+      || meta.taskId
+      || meta.task_id
+      || meta.url
+      || ''
+    ).trim();
+  }
+
+  function getVideoStoredTitle(meta = {}) {
+    return String(
+      meta.displayName
+      || meta.display_name
+      || meta.dataset?.displayName
+      || ''
+    ).trim();
+  }
+
+  async function persistVideoStoredTitle(meta = {}, title = '') {
+    const authHeader = await ensurePublicKey();
+    if (authHeader === null) {
+      throw new Error('missing_public_key');
+    }
+    const resolvedPostId = resolveVideoPostId(meta);
+    if (!resolvedPostId) {
+      throw new Error('missing_post_id');
+    }
+    const res = await fetch('/v1/public/video/rename', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader,
+      },
+      body: JSON.stringify({
+        post_id: resolvedPostId,
+        share_link: String(meta.shareLink || meta.share_link || '').trim(),
+        name: String(meta.name || '').trim(),
+        display_name: String(title || '').trim(),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.status !== 'success') {
+      throw new Error(data.detail || data.error || 'rename_failed');
+    }
+    return data.result || {};
+  }
+
+  function applyVideoCardTitle(item, fallbackTitle = '') {
+    if (!item) return;
+    const titleEl = item.querySelector('.video-item-title');
+    if (!titleEl) return;
+    const baseTitle = String(
+      item.dataset.defaultTitle
+      || fallbackTitle
+      || titleEl.textContent
+      || ''
+    ).trim();
+    if (baseTitle) {
+      item.dataset.defaultTitle = baseTitle;
+    }
+    const customTitle = getVideoStoredTitle({
+      postId: item.dataset.postId || '',
+      shareLink: item.dataset.shareLink || '',
+      taskId: item.dataset.taskId || '',
+      url: item.dataset.url || '',
+      name: item.dataset.name || '',
+      displayName: item.dataset.displayName || '',
+    });
+    titleEl.textContent = customTitle || baseTitle || '视频';
+  }
+
+  function syncCachedVideoDisplayName(meta = {}, displayName = '') {
+    if (!cacheVideoList) return;
+    const resolvedPostId = resolveVideoPostId(meta);
+    const resolvedUrl = String(meta.url || '').trim();
+    const rows = cacheVideoList.querySelectorAll('.cache-video-item');
+    rows.forEach((row) => {
+      const rowPostId = String(row.getAttribute('data-post-id') || '').trim();
+      const rowUrl = String(row.getAttribute('data-url') || '').trim();
+      const matched = (resolvedPostId && rowPostId === resolvedPostId)
+        || (resolvedUrl && rowUrl === resolvedUrl);
+      if (!matched) return;
+      row.setAttribute('data-display-name', String(displayName || '').trim());
+      const nameEl = row.querySelector('.cache-video-name');
+      if (nameEl) {
+        const fallbackName = String(row.getAttribute('data-name') || '').trim() || 'video.mp4';
+        nameEl.textContent = String(displayName || '').trim() || fallbackName;
+      }
+    });
+  }
+
+  function applyRenamedVideoState(meta = {}, displayName = '') {
+    const nextDisplayName = String(displayName || '').trim();
+    if (meta.item) {
+      meta.item.dataset.displayName = nextDisplayName;
+      applyVideoCardTitle(meta.item);
+    }
+    if (selectedVideoUrl && String(meta.url || '').trim() === String(selectedVideoUrl || '').trim()) {
+      selectedVideoMeta.displayName = nextDisplayName;
+      if (!nextDisplayName) {
+        selectedVideoMeta.defaultTitle = String(meta.name || selectedVideoMeta.name || selectedVideoMeta.defaultTitle || '').trim();
+      } else if (!selectedVideoMeta.defaultTitle) {
+        selectedVideoMeta.defaultTitle = String(meta.name || selectedVideoMeta.name || '').trim();
+      }
+      setEditMeta();
+    }
+    syncCachedVideoDisplayName(meta, nextDisplayName);
+  }
+
+  function applyResolvedVideoIdentity(meta = {}, sourceLabel = '') {
+    const resolvedPostId = resolveVideoPostId(meta);
+    if (!resolvedPostId) {
+      if (sourceLabel) {
+        console.warn(`[视频标识] ${sourceLabel} 未解析到 post_id`, meta);
+      }
+      return '';
+    }
+    currentExtendPostId = resolvedPostId;
+    currentFileAttachmentId = resolvedPostId;
+    if (!originalFileAttachmentId) {
+      originalFileAttachmentId = resolvedPostId;
+    }
+    if (sourceLabel) {
+      console.log(`[视频标识] ${sourceLabel} 解析 post_id:`, resolvedPostId);
+    }
+    return resolvedPostId;
   }
 
   function debugLog(...args) {
@@ -335,6 +712,17 @@
     return `https://imagine-public.x.ai/imagine-public/images/${parentPostId}.jpg`;
   }
 
+  function isImagePreviewUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return false;
+    if (raw.startsWith('data:image/')) return true;
+    if (/\/imagine-public\/images\/[0-9a-fA-F-]{32,36}(?:\.[A-Za-z0-9]+|[/?#]|$)/i.test(raw)) return true;
+    if (/\/v1\/files\/image\//i.test(raw)) return true;
+    if (/\/users\/.+\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$/i.test(raw)) return true;
+    if (/\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$/i.test(raw)) return true;
+    return false;
+  }
+
   function pickPreviewUrl(hit, parentPostId, fallbackValue = '') {
     const candidates = [
       hit && hit.imageUrl,
@@ -345,7 +733,7 @@
     ];
     for (const candidate of candidates) {
       const raw = String(candidate || '').trim();
-      if (raw) return raw;
+      if (isImagePreviewUrl(raw)) return raw;
     }
     return pickSourceUrl(hit, parentPostId, fallbackValue);
   }
@@ -382,8 +770,612 @@
     return { url: finalUrl, sourceUrl: sourceUrl || finalUrl, parentPostId };
   }
 
+  function makeReferenceId(prefix = 'ref') {
+    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function updateReferenceSummary() {
+    if (!imageFileName) return;
+    imageFileName.textContent = `已添加 ${referenceImages.length}/${REFERENCE_LIMIT} 张`;
+  }
+
+  function updateReferenceMeta() {
+    const primary = referenceImages[0] || null;
+    if (currentParentId) {
+      currentParentId.textContent = primary && primary.parentPostId ? primary.parentPostId : '-';
+    }
+    if (currentMode) {
+      currentMode.textContent = currentModeValue || 'upload';
+    }
+    updateReferenceSummary();
+  }
+
+  function renderReferenceStrip() {
+    if (!referenceStrip) return;
+    refreshReferenceMentionLabels();
+    syncPromptRichInputFromTextarea();
+    referenceStrip.innerHTML = '';
+    if (!referenceImages.length) {
+      const empty = document.createElement('div');
+      empty.className = 'reference-empty';
+      empty.textContent = `可上传 / 粘贴 / 拖拽参考图（最多 ${REFERENCE_LIMIT} 张）`;
+      referenceStrip.appendChild(empty);
+      updateReferenceMeta();
+      return;
+    }
+
+    referenceImages.forEach((item) => {
+      const index = referenceImages.findIndex((ref) => ref.id === item.id);
+      const card = document.createElement('div');
+      card.className = 'reference-item';
+      card.dataset.id = item.id;
+      if (item.id === selectedReferenceId) {
+        card.classList.add('is-active');
+      }
+      card.title = item.parentPostId ? `parentPostId: ${item.parentPostId}` : '点击切换预览';
+
+      const img = document.createElement('img');
+      img.src = item.previewUrl || item.sourceUrl || item.url || '';
+      img.alt = item.parentPostId ? `parentPostId: ${item.parentPostId}` : '参考图';
+      img.addEventListener('click', () => {
+        selectedReferenceId = item.id;
+        renderReferenceStrip();
+        setReferencePreviewItems(referenceImages);
+      });
+
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'reference-remove';
+      removeBtn.textContent = '×';
+      removeBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        removeReferenceItem(item.id);
+      });
+
+      card.appendChild(img);
+      card.appendChild(removeBtn);
+      const badge = document.createElement('div');
+      badge.className = 'reference-badge';
+      badge.textContent = item.mentionLabel || getReferenceMentionLabel(Math.max(0, index));
+      card.appendChild(badge);
+      referenceStrip.appendChild(card);
+    });
+
+    if (referenceImages.length < REFERENCE_LIMIT && imageFileInput) {
+      const addSlot = document.createElement('button');
+      addSlot.type = 'button';
+      addSlot.className = 'reference-add-slot';
+      addSlot.textContent = '+';
+      addSlot.title = '继续添加';
+      addSlot.addEventListener('click', () => imageFileInput.click());
+      referenceStrip.appendChild(addSlot);
+    }
+    updateReferenceMeta();
+  }
+
+  function clearReferencePreview() {
+    if (currentGallery) {
+      currentGallery.innerHTML = '';
+      currentGallery.classList.add('hidden');
+      currentGallery.dataset.count = '0';
+    }
+    if (previewEmpty) {
+      previewEmpty.classList.remove('hidden');
+    }
+  }
+
+  function setReferencePreviewItems(items) {
+    const list = Array.isArray(items) ? items.filter(Boolean) : [];
+    if (!currentGallery || !referencePreview) return;
+    if (!list.length) {
+      selectedReferenceId = '';
+      clearReferencePreview();
+      return;
+    }
+    const selected = list.find((item) => item.id === selectedReferenceId) || list[0];
+    selectedReferenceId = selected.id;
+    currentGallery.innerHTML = '';
+    currentGallery.dataset.count = '1';
+    currentGallery.classList.remove('hidden');
+    if (previewEmpty) {
+      previewEmpty.classList.add('hidden');
+    }
+    const box = document.createElement('div');
+    box.className = 'current-gallery-item current-gallery-item-single';
+    const img = document.createElement('img');
+    img.src = selected.previewUrl || selected.sourceUrl || selected.url || '';
+    img.alt = selected.parentPostId ? `parentPostId: ${selected.parentPostId}` : '参考图预览';
+    box.appendChild(img);
+    currentGallery.appendChild(box);
+  }
+
+  function removeReferenceItem(id) {
+    const before = referenceImages.length;
+    referenceImages = referenceImages.filter((item) => item.id !== id);
+    if (referenceImages.length === before) return;
+    if (!referenceImages.length) {
+      currentModeValue = 'upload';
+      selectedReferenceId = '';
+      if (imageUrlInput) imageUrlInput.value = '';
+      if (parentPostInput) parentPostInput.value = '';
+    } else {
+      const primary = referenceImages[0];
+      if (!referenceImages.some((item) => item.id === selectedReferenceId)) {
+        selectedReferenceId = primary.id;
+      }
+      if (imageUrlInput) {
+        imageUrlInput.value = primary.sourceUrl || primary.url || '';
+      }
+      if (parentPostInput) {
+        parentPostInput.value = primary.parentPostId || '';
+      }
+      currentModeValue = primary.parentPostId ? 'parent_post' : 'upload';
+    }
+    renderReferenceStrip();
+    setReferencePreviewItems(referenceImages);
+  }
+
+  function setReferenceItems(items, mode = 'upload') {
+    referenceImages = (Array.isArray(items) ? items : [])
+      .filter((item) => item && (item.previewUrl || item.sourceUrl || item.url))
+      .slice(0, REFERENCE_LIMIT)
+      .map((item, index) => enrichReferenceItem(item, index));
+    currentModeValue = mode;
+    const primary = referenceImages[0] || null;
+    selectedReferenceId = primary ? primary.id : '';
+    if (imageUrlInput) {
+      imageUrlInput.value = primary ? (primary.sourceUrl || primary.url || '') : '';
+    }
+    if (parentPostInput) {
+      parentPostInput.value = primary ? (primary.parentPostId || '') : '';
+    }
+    renderReferenceStrip();
+    setReferencePreviewItems(referenceImages);
+    syncPromptRichInputFromTextarea();
+  }
+
+  function appendReferenceItems(items, mode = 'upload') {
+    const candidates = (Array.isArray(items) ? items : [])
+      .filter((item) => item && (item.previewUrl || item.sourceUrl || item.url))
+      .map((item) => ({
+        ...item,
+        parentPostId: String(item.parentPostId || '').trim(),
+        sourceUrl: String(item.sourceUrl || item.url || '').trim(),
+        url: String(item.url || item.sourceUrl || '').trim()
+      }));
+    if (!candidates.length) return false;
+
+    const merged = Array.isArray(referenceImages) ? referenceImages.slice() : [];
+    let appended = false;
+    for (const item of candidates) {
+      const itemParentId = String(item.parentPostId || '').trim();
+      const itemSourceUrl = String(item.sourceUrl || item.url || '').trim();
+      const exists = merged.some((current) => {
+        const currentParentId = String(current.parentPostId || '').trim();
+        const currentSourceUrl = String(current.sourceUrl || current.url || '').trim();
+        if (itemParentId && currentParentId && itemParentId === currentParentId) return true;
+        if (itemSourceUrl && currentSourceUrl && itemSourceUrl === currentSourceUrl) return true;
+        return false;
+      });
+      if (exists) {
+        continue;
+      }
+      if (merged.length >= REFERENCE_LIMIT) {
+        toast(`最多支持 ${REFERENCE_LIMIT} 张参考图`, 'warning');
+        break;
+      }
+      merged.push(item);
+      appended = true;
+    }
+
+    if (!appended) return false;
+    setReferenceItems(
+      merged,
+      merged.some((item) => String(item.parentPostId || '').trim()) ? 'parent_post' : mode
+    );
+    return true;
+  }
+
+  function hideReferenceMentionMenu() {
+    activeMentionIndex = -1;
+    if (!referenceMentionMenu) return;
+    referenceMentionMenu.classList.add('hidden');
+    referenceMentionMenu.innerHTML = '';
+    lastMentionContext = null;
+  }
+
+  function getPromptMentionCandidates() {
+    return referenceImages.map((item, index) => ({
+      id: item.id,
+      label: String(item.mentionLabel || getReferenceMentionLabel(index)).trim(),
+      token: `@${String(item.mentionLabel || getReferenceMentionLabel(index)).trim()}`,
+      originalId: String(item.parentPostId || '').trim(),
+      imageUrl: String(item.previewUrl || item.sourceUrl || item.url || '').trim()
+    }));
+  }
+
+  function updatePromptEditorEmptyState() {
+    if (!promptRichInput) return;
+    const hasContent = Array.from(promptRichInput.childNodes).some((node) => {
+      if (node.nodeType === Node.TEXT_NODE) return String(node.textContent || '').length > 0;
+      if (node.nodeType === Node.ELEMENT_NODE) return true;
+      return false;
+    });
+    promptRichInput.classList.toggle('is-empty', !hasContent);
+  }
+
+  function createMentionChip(candidate) {
+    const chip = document.createElement('span');
+    chip.className = 'prompt-mention-chip react-renderer node-mention inline-flex align-middle';
+    chip.contentEditable = 'false';
+    chip.dataset.mentionToken = candidate.token;
+    chip.dataset.mentionLabel = candidate.label;
+    chip.dataset.originalId = candidate.originalId || '';
+    chip.tabIndex = 0;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'prompt-mention-chip-inner inline-flex items-center';
+    wrapper.dataset.mentionType = 'attachment';
+    wrapper.dataset.nodeViewWrapper = '';
+    wrapper.style.whiteSpace = 'normal';
+
+    if (candidate.imageUrl) {
+      const thumbWrap = document.createElement('div');
+      thumbWrap.className = 'prompt-mention-chip-thumb-wrap';
+
+      const thumb = document.createElement('img');
+      thumb.className = 'prompt-mention-chip-thumb';
+      thumb.src = candidate.imageUrl;
+      thumb.alt = '';
+      thumbWrap.appendChild(thumb);
+      wrapper.appendChild(thumbWrap);
+    }
+
+    const label = document.createElement('span');
+    label.className = 'prompt-mention-chip-label';
+    label.textContent = candidate.token;
+    wrapper.appendChild(label);
+    chip.appendChild(wrapper);
+    return chip;
+  }
+
+  function clearActivePromptChip() {
+    if (!promptRichInput) return;
+    promptRichInput.querySelectorAll('.prompt-mention-chip.is-active').forEach((node) => {
+      node.classList.remove('is-active');
+    });
+  }
+
+  function getSelectedPromptChip() {
+    if (!promptRichInput || !window.getSelection) return null;
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    const startNode = range.startContainer;
+    if (startNode && startNode.nodeType === Node.ELEMENT_NODE && startNode.classList && startNode.classList.contains('prompt-mention-chip')) {
+      return startNode;
+    }
+    const parent = startNode && startNode.parentElement ? startNode.parentElement.closest('.prompt-mention-chip') : null;
+    return parent && promptRichInput.contains(parent) ? parent : null;
+  }
+
+  function selectPromptChip(chip) {
+    if (!chip || !promptRichInput) return;
+    clearActivePromptChip();
+    chip.classList.add('is-active');
+    const selection = window.getSelection();
+    if (!selection) return;
+    const range = document.createRange();
+    range.selectNode(chip);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    promptRichInput.focus();
+  }
+
+  function getChipAdjacentToSelection(direction = 'backward') {
+    if (!promptRichInput || !window.getSelection) return null;
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    const startNode = range.startContainer;
+    const offset = range.startOffset;
+
+    if (range.collapsed) {
+      if (startNode.nodeType === Node.TEXT_NODE) {
+        const textLength = String(startNode.textContent || '').length;
+        if (direction === 'backward' && offset !== 0) {
+          return null;
+        }
+        if (direction === 'forward' && offset !== textLength) {
+          return null;
+        }
+        const sibling = direction === 'backward' ? startNode.previousSibling : startNode.nextSibling;
+        if (sibling && sibling.nodeType === Node.ELEMENT_NODE && sibling.classList && sibling.classList.contains('prompt-mention-chip')) {
+          return sibling;
+        }
+      } else if (startNode.nodeType === Node.ELEMENT_NODE) {
+        const neighbour = direction === 'backward' ? startNode.childNodes[offset - 1] : startNode.childNodes[offset];
+        if (neighbour && neighbour.nodeType === Node.TEXT_NODE) {
+          const neighbourText = String(neighbour.textContent || '');
+          if (neighbourText.length > 0) {
+            return null;
+          }
+        }
+        const index = direction === 'backward' ? offset - 1 : offset;
+        const candidate = startNode.childNodes[index];
+        if (candidate && candidate.nodeType === Node.ELEMENT_NODE && candidate.classList && candidate.classList.contains('prompt-mention-chip')) {
+          return candidate;
+        }
+      }
+    } else if (startNode.nodeType === Node.ELEMENT_NODE && startNode.classList && startNode.classList.contains('prompt-mention-chip')) {
+      return startNode;
+    }
+    return null;
+  }
+
+  function hasEditableTextNearSelection(direction = 'backward') {
+    if (!promptRichInput || !window.getSelection) return false;
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) return false;
+    const range = selection.getRangeAt(0);
+    if (!range.collapsed) return false;
+    const startNode = range.startContainer;
+    const offset = range.startOffset;
+
+    if (startNode.nodeType === Node.TEXT_NODE) {
+      const text = String(startNode.textContent || '');
+      return direction === 'backward' ? offset > 0 : offset < text.length;
+    }
+
+    if (startNode.nodeType === Node.ELEMENT_NODE) {
+      const neighbour = direction === 'backward' ? startNode.childNodes[offset - 1] : startNode.childNodes[offset];
+      if (!neighbour) return false;
+      if (neighbour.nodeType === Node.TEXT_NODE) {
+        return String(neighbour.textContent || '').length > 0;
+      }
+      return false;
+    }
+
+    return false;
+  }
+
+  function serializePromptRichInput() {
+    if (!promptRichInput) return '';
+    const parts = [];
+    promptRichInput.childNodes.forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        parts.push(node.textContent || '');
+        return;
+      }
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const el = node;
+        if (el.classList && el.classList.contains('prompt-mention-chip')) {
+          parts.push(el.dataset.mentionToken || el.textContent || '');
+        } else {
+          parts.push(el.textContent || '');
+        }
+      }
+    });
+    return parts.join('');
+  }
+
+  function setPromptTextareaValue(value) {
+    if (!promptInput) return;
+    if (promptInput.value === value) return;
+    isSyncingPromptEditor = true;
+    promptInput.value = value;
+    promptInput.dispatchEvent(new Event('input', { bubbles: true }));
+    isSyncingPromptEditor = false;
+  }
+
+  function resolvePromptMentionContext(range) {
+    if (!promptRichInput || !range) return null;
+    if (!promptRichInput.contains(range.startContainer)) return null;
+    if (range.startContainer.nodeType !== Node.TEXT_NODE) return null;
+    const textNode = range.startContainer;
+    const before = String(textNode.textContent || '').slice(0, range.startOffset);
+    const match = before.match(/@([^\s@]*)$/);
+    if (!match) return null;
+    return {
+      textNode,
+      startOffset: before.length - match[1].length - 1,
+      endOffset: range.startOffset,
+      query: match[1] || ''
+    };
+  }
+
+  function getMentionContext() {
+    if (!promptRichInput) return null;
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) return null;
+    return resolvePromptMentionContext(selection.getRangeAt(0));
+  }
+
+  function setCaretAfterNode(node) {
+    if (!promptRichInput || !node) return;
+    const range = document.createRange();
+    range.setStartAfter(node);
+    range.collapse(true);
+    const selection = window.getSelection();
+    if (!selection) return;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    promptRichInput.focus();
+  }
+
+  function syncPromptTextareaFromRichInput() {
+    const value = serializePromptRichInput();
+    setPromptTextareaValue(value);
+    clearActivePromptChip();
+    updatePromptEditorEmptyState();
+  }
+
+  function rebuildPromptRichInputFromText(value) {
+    if (!promptRichInput) return;
+    const raw = String(value || '');
+    const tokenMap = new Map();
+    getPromptMentionCandidates().forEach((item) => {
+      tokenMap.set(item.token, item);
+      if (item.originalId) {
+        tokenMap.set(`@${item.originalId}`, item);
+      }
+    });
+
+    promptRichInput.innerHTML = '';
+    const tokenPattern = /@Image\s+\d+|@[0-9a-fA-F-]{32,36}/g;
+    let lastIndex = 0;
+    let match;
+    while ((match = tokenPattern.exec(raw)) !== null) {
+      const [token] = match;
+      if (match.index > lastIndex) {
+        promptRichInput.appendChild(document.createTextNode(raw.slice(lastIndex, match.index)));
+      }
+      const candidate = tokenMap.get(token);
+      if (candidate) {
+        promptRichInput.appendChild(createMentionChip(candidate));
+      } else {
+        promptRichInput.appendChild(document.createTextNode(token));
+      }
+      lastIndex = match.index + token.length;
+    }
+    if (lastIndex < raw.length) {
+      promptRichInput.appendChild(document.createTextNode(raw.slice(lastIndex)));
+    }
+    updatePromptEditorEmptyState();
+  }
+
+  function syncPromptRichInputFromTextarea() {
+    if (!promptInput || !promptRichInput || isSyncingPromptEditor) return;
+    rebuildPromptRichInputFromText(promptInput.value || '');
+  }
+
+  function normalizePromptRichInputTokens(moveCaretToEnd = true) {
+    if (!promptRichInput) return;
+    rebuildPromptRichInputFromText(serializePromptRichInput());
+    if (moveCaretToEnd) {
+      const selection = window.getSelection();
+      if (selection) {
+        const range = document.createRange();
+        range.selectNodeContents(promptRichInput);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
+    syncPromptTextareaFromRichInput();
+  }
+
+  function insertMentionLabel(labelOrCandidate) {
+    if (!promptRichInput) return;
+    const candidate = typeof labelOrCandidate === 'string'
+      ? getPromptMentionCandidates().find((item) => item.label === labelOrCandidate)
+      : labelOrCandidate;
+    if (!candidate) return;
+
+    const selection = window.getSelection();
+    let range = null;
+    if (selection && selection.rangeCount) {
+      const currentRange = selection.getRangeAt(0);
+      if (promptRichInput.contains(currentRange.startContainer)) {
+        range = currentRange.cloneRange();
+      }
+    }
+    if (!range && lastMentionRange) {
+      range = lastMentionRange.cloneRange();
+    }
+    const context = resolvePromptMentionContext(range) || lastMentionContext;
+    if (!context) {
+      const chip = createMentionChip(candidate);
+      promptRichInput.appendChild(chip);
+      promptRichInput.appendChild(document.createTextNode(' '));
+      normalizePromptRichInputTokens(true);
+      hideReferenceMentionMenu();
+      return;
+    }
+
+    if (context.textNode) {
+      const raw = String(context.textNode.textContent || '');
+      context.textNode.textContent = `${raw.slice(0, context.startOffset)}${raw.slice(context.endOffset)}`;
+      const workingRange = document.createRange();
+      workingRange.setStart(context.textNode, context.startOffset);
+      workingRange.collapse(true);
+      if (selection) {
+        selection.removeAllRanges();
+        selection.addRange(workingRange);
+      }
+      range = workingRange;
+    }
+
+    const chip = createMentionChip(candidate);
+    range.insertNode(chip);
+    const trailingSpace = document.createTextNode(' ');
+    chip.after(trailingSpace);
+    setCaretAfterNode(trailingSpace);
+    syncPromptTextareaFromRichInput();
+    hideReferenceMentionMenu();
+  }
+
+  function renderReferenceMentionMenu() {
+    if (!referenceMentionMenu || !promptRichInput) return;
+    const ctx = getMentionContext();
+    if (!ctx || !referenceImages.length) {
+      hideReferenceMentionMenu();
+      return;
+    }
+    const query = String(ctx.query || '').trim().toLowerCase();
+    lastMentionContext = ctx;
+    lastMentionRange = window.getSelection() && window.getSelection().rangeCount
+      ? window.getSelection().getRangeAt(0).cloneRange()
+      : lastMentionRange;
+    const candidates = getPromptMentionCandidates().filter((item) => {
+      return !query || item.label.toLowerCase().includes(query) || item.token.toLowerCase().includes(query);
+    });
+    if (!candidates.length) {
+      hideReferenceMentionMenu();
+      return;
+    }
+    if (activeMentionIndex < 0 || activeMentionIndex >= candidates.length) {
+      activeMentionIndex = 0;
+    }
+
+    referenceMentionMenu.innerHTML = '';
+    candidates.forEach((item, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'reference-mention-item';
+      if (index === activeMentionIndex) {
+        button.classList.add('is-active');
+      }
+      button.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        insertMentionLabel(item);
+      });
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        insertMentionLabel(item);
+      });
+
+      if (item.imageUrl) {
+        const thumb = document.createElement('img');
+        thumb.className = 'reference-mention-thumb';
+        thumb.src = item.imageUrl;
+        thumb.alt = item.label;
+        button.appendChild(thumb);
+      }
+
+      const label = document.createElement('div');
+      label.className = 'reference-mention-label';
+      label.textContent = item.label;
+      button.appendChild(label);
+
+      referenceMentionMenu.appendChild(button);
+    });
+    referenceMentionMenu.classList.remove('hidden');
+  }
+
   function applyParentPostReference(text, options = {}) {
     const silent = Boolean(options.silent);
+    const append = Boolean(options.append);
     const resolved = resolveReferenceByText(text);
     const raw = String(text || '').trim();
     const fallbackId = extractParentPostId(raw);
@@ -398,86 +1390,23 @@
       }
       return false;
     }
-    if (imageUrlInput) {
-      imageUrlInput.value = finalSourceUrl || finalPreviewUrl || '';
+    const targetItem = {
+      id: makeReferenceId('parent'),
+      previewUrl: finalPreviewUrl,
+      sourceUrl: finalSourceUrl || finalPreviewUrl,
+      url: finalPreviewUrl,
+      parentPostId: finalParentId,
+      name: finalParentId || 'parentPostId'
+    };
+    if (append) {
+      appendReferenceItems([targetItem], 'parent_post');
+    } else {
+      setReferenceItems([targetItem], 'parent_post');
     }
-    if (parentPostInput) {
-      parentPostInput.value = finalParentId;
-    }
-
-    // 仅清空本地图片变量，不调用全局 clearFileSelection 避免清空自身输入框
-    fileDataUrl = '';
-    if (imageFileInput) {
-      imageFileInput.value = '';
-    }
-    if (imageFileName) {
-      imageFileName.textContent = '未选择文件';
-    }
-
-    setReferencePreview(finalPreviewUrl, finalParentId);
     if (!silent) {
-      toast('已使用 parentPostId 填充参考图', 'success');
+      toast(append ? '已追加参考图' : '已使用 parentPostId 填充参考图', 'success');
     }
     return true;
-  }
-
-  function clearReferencePreview() {
-    if (!referencePreview) return;
-    referencePreview.classList.add('hidden');
-    if (referencePreviewImg) {
-      referencePreviewImg.removeAttribute('src');
-    }
-    if (referencePreviewMeta) {
-      referencePreviewMeta.textContent = '';
-    }
-  }
-
-  function buildReferencePreviewMeta(url, parentPostId) {
-    const raw = String(url || '').trim();
-    if (parentPostId) {
-      return `parentPostId: ${parentPostId}`;
-    }
-    if (!raw) return '';
-    if (raw.startsWith('data:image/')) {
-      return '本地图片（Base64 已隐藏）';
-    }
-    return raw;
-  }
-
-  function setReferencePreview(url, parentPostId) {
-    const safeUrl = String(url || '').trim();
-    if (!safeUrl || !referencePreview || !referencePreviewImg) {
-      clearReferencePreview();
-      return;
-    }
-    referencePreview.classList.remove('hidden');
-    referencePreviewImg.src = safeUrl;
-    referencePreviewImg.alt = parentPostId ? `parentPostId: ${parentPostId}` : '参考图预览';
-    referencePreviewImg.onerror = () => {
-      if (!parentPostId) return;
-      const api = getParentMemoryApi();
-      const memoryHit = api && typeof api.getByParentPostId === 'function'
-        ? api.getByParentPostId(parentPostId)
-        : null;
-      const candidates = [
-        memoryHit && memoryHit.imageUrl,
-        memoryHit && memoryHit.sourceImageUrl,
-        api && typeof api.buildImaginePublicUrl === 'function'
-          ? String(api.buildImaginePublicUrl(parentPostId) || '').trim()
-          : `https://imagine-public.x.ai/imagine-public/images/${parentPostId}.jpg`,
-      ].map((it) => String(it || '').trim()).filter(Boolean);
-      for (const next of candidates) {
-        if (next === safeUrl || referencePreviewImg.src === next) {
-          continue;
-        }
-        referencePreviewImg.src = next;
-        return;
-      }
-      referencePreviewImg.onerror = null;
-    };
-    if (referencePreviewMeta) {
-      referencePreviewMeta.textContent = buildReferencePreviewMeta(safeUrl, parentPostId);
-    }
   }
 
   function setStatus(state, text) {
@@ -585,6 +1514,10 @@
     const title = document.createElement('div');
     title.className = 'video-item-title';
     title.textContent = `视频 ${previewCount}`;
+    item.dataset.defaultTitle = title.textContent;
+
+    const prompt = document.createElement('div');
+    prompt.className = 'video-item-prompt hidden';
 
     const actions = document.createElement('div');
     actions.className = 'video-item-actions video-item-actions-overlay';
@@ -601,6 +1534,12 @@
     downloadBtn.textContent = '下载';
     downloadBtn.disabled = true;
 
+      const renameBtn = document.createElement('button');
+      renameBtn.className = 'geist-button-outline text-xs px-3 video-rename';
+      renameBtn.type = 'button';
+      renameBtn.textContent = '重命名';
+      renameBtn.disabled = true;
+
     const editBtn = document.createElement('button');
     editBtn.className = 'geist-button-outline text-xs px-3 video-edit';
     editBtn.type = 'button';
@@ -609,8 +1548,10 @@
 
     actions.appendChild(openBtn);
     actions.appendChild(downloadBtn);
+    actions.appendChild(renameBtn);
     actions.appendChild(editBtn);
     header.appendChild(title);
+    header.appendChild(prompt);
 
     const body = document.createElement('div');
     body.className = 'video-item-body';
@@ -636,11 +1577,26 @@
     if (!item) return;
     const openBtn = item.querySelector('.video-open');
     const downloadBtn = item.querySelector('.video-download');
+    const renameBtn = item.querySelector('.video-rename');
     const editBtn = item.querySelector('.video-edit');
     const link = item.querySelector('.video-item-link');
-    const safeUrl = normalizePlayableVideoUrl(url || '');
+    const safeUrl = url || '';
     item.dataset.url = safeUrl;
     item.dataset.completed = safeUrl ? '1' : '0';
+    if (!item.dataset.name && safeUrl) {
+      try {
+        const pathname = new URL(safeUrl, window.location.origin).pathname || '';
+        const filename = decodeURIComponent(pathname.split('/').pop() || '').trim();
+        if (filename) {
+          item.dataset.name = filename;
+        }
+      } catch (e) {
+        const fallbackName = decodeURIComponent(String(safeUrl).split('/').pop() || '').trim();
+        if (fallbackName) {
+          item.dataset.name = fallbackName;
+        }
+      }
+    }
     if (link) {
       link.textContent = '';
       link.classList.remove('has-url');
@@ -658,12 +1614,16 @@
       downloadBtn.dataset.url = safeUrl;
       downloadBtn.disabled = !safeUrl;
     }
+    if (renameBtn) {
+      renameBtn.disabled = !safeUrl;
+    }
     if (editBtn) {
       editBtn.disabled = !safeUrl;
     }
     if (safeUrl) {
       item.classList.remove('is-pending');
     }
+    applyVideoCardTitle(item);
   }
 
   function setIndeterminate(active) {
@@ -693,12 +1653,8 @@
   }
 
   function clearFileSelection() {
-    fileDataUrl = '';
     if (imageFileInput) {
       imageFileInput.value = '';
-    }
-    if (imageFileName) {
-      imageFileName.textContent = '未选择文件';
     }
     if (imageUrlInput) {
       imageUrlInput.value = '';
@@ -706,6 +1662,9 @@
     if (parentPostInput) {
       parentPostInput.value = '';
     }
+    referenceImages = [];
+    currentModeValue = 'upload';
+    renderReferenceStrip();
     clearReferencePreview();
   }
 
@@ -726,27 +1685,25 @@
     return Array.from(types).includes('Files');
   }
 
-  function pickImageFileFromDataTransfer(dataTransfer) {
-    if (!dataTransfer) return null;
+  function pickImageFilesFromDataTransfer(dataTransfer) {
+    if (!dataTransfer) return [];
+    const files = [];
+    const pushIfImage = (file) => {
+      if (!file) return;
+      if (!String(file.type || '').startsWith('image/')) return;
+      files.push(file);
+    };
     if (dataTransfer.files && dataTransfer.files.length) {
-      for (const file of dataTransfer.files) {
-        if (file && String(file.type || '').startsWith('image/')) {
-          return file;
-        }
-      }
+      Array.from(dataTransfer.files).forEach(pushIfImage);
     }
-    if (dataTransfer.items && dataTransfer.items.length) {
-      for (const item of dataTransfer.items) {
-        if (!item) continue;
-        if (item.kind === 'file') {
-          const file = item.getAsFile ? item.getAsFile() : null;
-          if (file && String(file.type || '').startsWith('image/')) {
-            return file;
-          }
-        }
-      }
+    if (!files.length && dataTransfer.items && dataTransfer.items.length) {
+      Array.from(dataTransfer.items).forEach((item) => {
+        if (!item || item.kind !== 'file') return;
+        const file = item.getAsFile ? item.getAsFile() : null;
+        pushIfImage(file);
+      });
     }
-    return null;
+    return files;
   }
 
   function setRefDragActive(active) {
@@ -754,34 +1711,52 @@
     refDropZone.classList.toggle('dragover', Boolean(active));
   }
 
-  async function applyReferenceImageFile(file, sourceLabel) {
-    if (!file) return;
-    const mimeType = String(file.type || '');
-    if (mimeType && !mimeType.startsWith('image/')) {
-      toast('仅支持图片文件', 'warning');
-      return;
+  async function applyReferenceImageFiles(files, sourceLabel) {
+    const targets = Array.isArray(files) ? files.filter(Boolean) : [];
+    if (!targets.length) return 0;
+    const slotsLeft = Math.max(0, REFERENCE_LIMIT - referenceImages.length);
+    if (slotsLeft <= 0) {
+      toast(`最多支持 ${REFERENCE_LIMIT} 张参考图`, 'warning');
+      return 0;
     }
-    const dataUrl = await readFileAsDataUrl(file);
-    if (!dataUrl.startsWith('data:image/')) {
-      throw new Error('图片格式不受支持');
+    const accepted = targets.slice(0, slotsLeft);
+    let added = 0;
+    for (const file of accepted) {
+      const mimeType = String(file.type || '');
+      if (mimeType && !mimeType.startsWith('image/')) {
+        continue;
+      }
+      const dataUrl = await readFileAsDataUrl(file);
+      if (!dataUrl.startsWith('data:image/')) {
+        continue;
+      }
+      referenceImages.push({
+        id: makeReferenceId('upload'),
+        previewUrl: dataUrl,
+        sourceUrl: dataUrl,
+        url: dataUrl,
+        parentPostId: '',
+        name: file.name || sourceLabel || '已选择图片',
+        mentionLabel: getReferenceMentionLabel(referenceImages.length)
+      });
+      added += 1;
     }
-    fileDataUrl = dataUrl;
     if (imageUrlInput) {
       imageUrlInput.value = '';
     }
     if (parentPostInput) {
       parentPostInput.value = '';
     }
-    if (imageFileInput) {
-      imageFileInput.value = '';
+    currentModeValue = 'upload';
+    renderReferenceStrip();
+    setReferencePreviewItems(referenceImages);
+    if (sourceLabel && added > 0) {
+      toast(`${sourceLabel}已载入 ${added} 张`, 'success');
     }
-    if (imageFileName) {
-      imageFileName.textContent = file.name || sourceLabel || '已选择图片';
+    if (targets.length > accepted.length) {
+      toast(`最多支持 ${REFERENCE_LIMIT} 张参考图，已忽略超出部分`, 'warning');
     }
-    setReferencePreview(fileDataUrl, '');
-    if (sourceLabel) {
-      toast(`${sourceLabel}已载入`, 'success');
-    }
+    return added;
   }
 
   function normalizeAuthHeader(authHeader) {
@@ -815,26 +1790,34 @@
     const prompt = promptInput ? promptInput.value.trim() : '';
     const rawUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
     const rawParent = parentPostInput ? parentPostInput.value.trim() : '';
-    if (fileDataUrl && rawUrl) {
-      toast('参考图只能选择其一：URL/Base64 或 本地上传', 'error');
-      throw new Error('invalid_reference');
+    let refs = Array.isArray(referenceImages) ? referenceImages.slice() : [];
+    if (!refs.length && (rawParent || rawUrl)) {
+      const resolvedRef = resolveReferenceByText(rawParent || rawUrl);
+      const manualRef = {
+        id: makeReferenceId('manual'),
+        previewUrl: resolvedRef.url || resolvedRef.sourceUrl || rawUrl,
+        sourceUrl: resolvedRef.sourceUrl || rawUrl,
+        url: resolvedRef.url || resolvedRef.sourceUrl || rawUrl,
+        parentPostId: rawParent || resolvedRef.parentPostId || '',
+        name: 'manual'
+      };
+      refs = [manualRef];
+      setReferenceItems(refs, manualRef.parentPostId ? 'parent_post' : 'upload');
     }
-    let resolvedRef = { url: '', sourceUrl: '', parentPostId: '' };
-    if (!fileDataUrl) {
-      resolvedRef = resolveReferenceByText(rawParent || rawUrl);
-    }
-    const parentPostId = fileDataUrl ? '' : (rawParent || resolvedRef.parentPostId || '').trim();
-    const imageUrl = fileDataUrl ? fileDataUrl : (parentPostId ? (rawUrl || resolvedRef.sourceUrl || '') : (rawUrl || resolvedRef.url || ''));
 
-    if (!fileDataUrl && (resolvedRef.parentPostId || parentPostId)) {
-      if (imageUrlInput && !imageUrlInput.value.trim() && (resolvedRef.sourceUrl || resolvedRef.url)) {
-        imageUrlInput.value = resolvedRef.sourceUrl || resolvedRef.url;
-      }
-      if (parentPostInput && !parentPostInput.value.trim() && (resolvedRef.parentPostId || parentPostId)) {
-        parentPostInput.value = resolvedRef.parentPostId || parentPostId;
-      }
-      setReferencePreview(resolvedRef.url || resolvedRef.sourceUrl || imageUrl, resolvedRef.parentPostId || parentPostId);
-    }
+    const referenceItems = refs.map((item, index) => ({
+      parent_post_id: String(item && item.parentPostId ? item.parentPostId : '').trim(),
+      image_url: String(item && (item.sourceUrl || item.url) ? (item.sourceUrl || item.url) : '').trim(),
+      source_image_url: String(item && item.sourceUrl ? item.sourceUrl : '').trim(),
+      mention_alias: String(item && item.mentionLabel ? item.mentionLabel : getReferenceMentionLabel(index)).trim()
+    })).filter((item) => item.parent_post_id || item.image_url || item.source_image_url);
+
+    const hasReferenceItems = referenceItems.length > 0;
+    const primaryRef = hasReferenceItems ? null : (referenceItems[0] || null);
+    const parentPostId = primaryRef ? String(primaryRef.parent_post_id || '').trim() : '';
+    const imageUrl = primaryRef ? String(primaryRef.image_url || primaryRef.source_image_url || '').trim() : '';
+    const sourceImageUrl = primaryRef ? String(primaryRef.source_image_url || primaryRef.image_url || '').trim() : '';
+
     const res = await fetch('/v1/public/video/start', {
       method: 'POST',
       headers: {
@@ -843,14 +1826,16 @@
       },
       body: JSON.stringify({
         prompt,
-        image_url: parentPostId ? null : (imageUrl || null),
-        parent_post_id: parentPostId || null,
-        source_image_url: parentPostId ? (resolvedRef.sourceUrl || imageUrl || null) : null,
+        image_url: hasReferenceItems ? null : (parentPostId ? null : (imageUrl || null)),
+        parent_post_id: hasReferenceItems ? null : (parentPostId || null),
+        source_image_url: hasReferenceItems ? null : (parentPostId ? (sourceImageUrl || null) : null),
+        reference_items: referenceItems,
         reasoning_effort: DEFAULT_REASONING_EFFORT,
         aspect_ratio: ratioSelect ? ratioSelect.value : '3:2',
         video_length: lengthSelect ? parseInt(lengthSelect.value, 10) : 6,
         resolution_name: resolutionSelect ? resolutionSelect.value : '480p',
         preset: presetSelect ? presetSelect.value : 'normal',
+        single_image_mode: singleImageModeSelect ? singleImageModeSelect.value : 'frame',
         concurrent: getConcurrentValue()
       })
     });
@@ -905,7 +1890,7 @@
         return { url: urlMatch[1] };
       }
     }
-    const urlMatches = buffer.match(/https?:\/\/[^\s"'<>]*?\.mp4(?:\?[^\s"'<>]*)?(?:#[^\s"'<>]*)?/gi);
+    const urlMatches = buffer.match(/https?:\/\/[^\s<)]+/g);
     if (urlMatches && urlMatches.length) {
       return { url: urlMatches[urlMatches.length - 1] };
     }
@@ -917,7 +1902,7 @@
     if (!raw) return '';
     const info = extractVideoInfo(raw);
     if (info && info.url) return info.url;
-    const mp4 = raw.match(/https?:\/\/[^\s"'<>]*?\.mp4(?:\?[^\s"'<>]*)?(?:#[^\s"'<>]*)?/i);
+    const mp4 = raw.match(/https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/i);
     if (mp4 && mp4[0]) return mp4[0];
     const local = raw.match(/\/v1\/files\/video\/[^\s"'<>]+/i);
     if (local && local[0]) {
@@ -949,14 +1934,6 @@
       } else if (videoEl.getAttribute('src')) {
         videoUrl = videoEl.getAttribute('src');
       }
-      videoUrl = normalizePlayableVideoUrl(videoUrl);
-      if (videoUrl) {
-        if (source) {
-          source.setAttribute('src', videoUrl);
-        } else {
-          videoEl.setAttribute('src', videoUrl);
-        }
-      }
     }
     updateItemLinks(container, videoUrl);
   }
@@ -964,7 +1941,7 @@
   function renderVideoFromUrl(taskState, url) {
     const container = taskState && taskState.previewItem;
     if (!container) return;
-    const safeUrl = normalizePlayableVideoUrl(url || '');
+    const safeUrl = url || '';
     const body = container.querySelector('.video-item-body');
     if (!body) return;
     const actions = body.querySelector('.video-item-actions-overlay');
@@ -983,6 +1960,21 @@
     }
   }
 
+  function setPreviewPrompt(item, text) {
+    if (!item) return;
+    const promptEl = item.querySelector('.video-item-prompt');
+    const promptText = String(text || '').trim();
+    item.dataset.prompt = promptText;
+    if (!promptEl) return;
+    if (promptText) {
+      promptEl.textContent = promptText;
+      promptEl.classList.remove('hidden');
+      return;
+    }
+    promptEl.textContent = '';
+    promptEl.classList.add('hidden');
+  }
+
   function getSelectedVideoItem() {
     if (!selectedVideoItemId || !videoStage) return null;
     return videoStage.querySelector(`.video-item[data-index="${selectedVideoItemId}"]`);
@@ -997,24 +1989,21 @@
     });
   }
 
-  function bindEditVideoSource(url) {
+  function bindEditVideoSource(url, meta = {}) {
     const safeUrl = String(url || '').trim();
     selectedVideoUrl = safeUrl;
+    selectedVideoMeta = {
+      postId: String(meta.postId || '').trim(),
+      shareLink: String(meta.shareLink || '').trim(),
+      originalPostId: String(meta.originalPostId || '').trim(),
+      name: String(meta.name || '').trim(),
+      displayName: String(meta.displayName || '').trim(),
+      defaultTitle: String(meta.defaultTitle || '').trim(),
+    };
     if (editHint) {
       editHint.classList.toggle('hidden', Boolean(safeUrl));
     }
-    // 从 URL 中提取 postId （支持历史面板点击编辑）
-    const postId = extractPostIdFromFileName(safeUrl);
-    if (postId) {
-      currentExtendPostId = postId;
-      currentFileAttachmentId = postId;
-      // 首次设置 originalFileAttachmentId（后续延长不覆盖）
-      if (!originalFileAttachmentId) {
-        originalFileAttachmentId = postId;
-        debugLog('bindEditVideoSource: set originalFileAttachmentId =', postId);
-      }
-      debugLog('bindEditVideoSource: extracted postId =', postId);
-    }
+    applyResolvedVideoIdentity({ ...meta, url: safeUrl }, 'bindEditVideoSource');
     if (!editVideo) return;
     enforceInlinePlayback(editVideo);
     editVideo.src = safeUrl;
@@ -1044,12 +2033,20 @@
     }
     if (editHint) editHint.classList.add('hidden');
     if (editBody) editBody.classList.remove('hidden');
-    bindEditVideoSource(url);
+    bindEditVideoSource(url, item ? {
+      postId: item.dataset.postId || '',
+      shareLink: item.dataset.shareLink || '',
+      originalPostId: item.dataset.originalPostId || '',
+      name: item.dataset.name || '',
+      displayName: item.dataset.displayName || '',
+      defaultTitle: item.dataset.defaultTitle || '',
+    } : {});
   }
 
   function closeEditPanel() {
     if (editHint) editHint.classList.remove('hidden');
     if (editBody) editBody.classList.remove('hidden');
+    selectedVideoMeta = {};
   }
 
   function scheduleWorkspacePreviewLock(force = false) {
@@ -1143,9 +2140,7 @@
   function normalizePlayableVideoUrl(url) {
     let raw = String(url || '').trim();
     if (!raw) return '';
-    raw = raw.replace(/[\u0000-\u001F\u007F]+/g, '');
-    raw = raw.replace(/[)\]>.,;\\]+$/g, '');
-    raw = raw.replace(/(\.mp4)[A-Za-z]+(?=($|[?#]))/i, '$1');
+    raw = raw.replace(/[)\]>.,;]+$/g, '');
     raw = raw.replace(/(\.mp4)\/+$/i, '$1');
     return raw;
   }
@@ -1176,14 +2171,23 @@
     const html = items.map((item, idx) => {
       const name = String(item.name || '');
       const url = String(item.view_url || '');
+      const postId = String(item.post_id || '');
+      const shareLink = String(item.share_link || '');
+      const originalPostId = String(item.original_post_id || '');
+        const displayName = getVideoStoredTitle({
+          postId,
+          shareLink,
+          url,
+          displayName: item.display_name || '',
+        }) || name || `video_${idx + 1}.mp4`;
       const size = formatBytes(item.size_bytes);
       const mtime = formatMtime(item.mtime_ms);
-      return `<div class="cache-video-item" data-url="${url}" data-name="${name}">
+        return `<div class="cache-video-item" data-url="${url}" data-name="${name}" data-post-id="${postId}" data-share-link="${shareLink}" data-original-post-id="${originalPostId}" data-display-name="${String(item.display_name || '')}">
         <div class="cache-video-thumb-wrap">
           <video class="cache-video-thumb" src="${url}" preload="auto" muted playsinline></video>
         </div>
         <div class="cache-video-meta">
-          <div class="cache-video-name">${name || `video_${idx + 1}.mp4`}</div>
+          <div class="cache-video-name">${displayName}</div>
           <div class="cache-video-sub">${size} · ${mtime}</div>
         </div>
         <button class="geist-button-outline text-xs px-3 cache-video-use" type="button">使用</button>
@@ -1217,25 +2221,23 @@
     }
   }
 
-  function useCachedVideo(url, name) {
+  function useCachedVideo(url, name, meta = {}) {
     const safeUrl = String(url || '').trim();
     if (!safeUrl) return;
     selectedVideoItemId = `cache-${Date.now()}`;
     selectedVideoUrl = safeUrl;
-    // 从文件名中自动提取 parentPostId 用于视频延长
-    const extractedPostId = extractPostIdFromFileName(String(name || ''));
-    if (extractedPostId) {
-      currentExtendPostId = extractedPostId;
-      currentFileAttachmentId = extractedPostId;
-      // 从缓存重新选择视频时重置 originalFileAttachmentId（开启新的延长链）
-      originalFileAttachmentId = extractedPostId;
-      debugLog('useCachedVideo: extracted postId =', extractedPostId);
-    }
-    if (imageUrlInput) imageUrlInput.value = safeUrl;
-    if (imageFileName && name) imageFileName.textContent = name;
+    originalFileAttachmentId = '';
+    applyResolvedVideoIdentity({ ...meta, name, url: safeUrl }, 'useCachedVideo');
     if (enterEditBtn) enterEditBtn.disabled = false;
     closeCacheVideoModal();
-    openEditPanel();
+    bindEditVideoSource(safeUrl, {
+      ...meta,
+      name,
+      displayName: String(meta.displayName || '').trim(),
+      defaultTitle: String(name || '').trim(),
+    });
+    if (editHint) editHint.classList.add('hidden');
+    if (editBody) editBody.classList.remove('hidden');
     setEditMeta();
   }
 
@@ -1351,7 +2353,7 @@
     const previewItem = taskState.previewItem || null;
     const hasVideoUrl = Boolean(previewItem && String(previewItem.dataset.url || '').trim());
     taskState.done = true;
-    if (hasVideoUrl) {
+    if (!hasError && hasVideoUrl) {
       taskState.progress = 100;
     } else {
       hasRunError = true;
@@ -1394,6 +2396,7 @@
     updateMeta();
     resetOutput(true);
     setStatus('connecting', '连接中');
+    const promptText = promptInput ? String(promptInput.value || '').trim() : '';
 
     let taskIds = [];
     try {
@@ -1417,6 +2420,7 @@
     for (const taskId of taskIds) {
       const previewItem = initPreviewSlot();
       setPreviewTitle(previewItem, buildHistoryTitle('generated', previewItem && previewItem.dataset ? previewItem.dataset.index : previewCount));
+      setPreviewPrompt(previewItem, promptText);
       taskStates.set(taskId, {
         taskId,
         source: null,
@@ -1488,11 +2492,7 @@
       es.onerror = () => {
         if (!isRunning) return;
         setStatus('error', '部分任务连接异常');
-        const state = taskStates.get(taskId);
-        const hasVideoUrl = Boolean(
-          state && state.previewItem && String(state.previewItem.dataset.url || '').trim()
-        );
-        markTaskFinished(taskId, !hasVideoUrl);
+        markTaskFinished(taskId, true);
       };
     });
   }
@@ -1537,6 +2537,7 @@
         video_length: lengthSelect ? parseInt(lengthSelect.value, 10) : 6,
         resolution_name: resolutionSelect ? resolutionSelect.value : '480p',
         preset: presetSelect ? presetSelect.value : 'custom',
+        single_image_mode: 'frame',
         concurrent,
         n: concurrent,
         edit_context: editCtx
@@ -1695,16 +2696,16 @@
     startElapsedTimer();
     try {
       const nextRound = editingRound + 1;
-      const basePreset = presetSelect ? presetSelect.value : 'normal';
+      const concurrent = getConcurrentValue();
 
       const body = {
         prompt: prompt,
         aspect_ratio: ratioSelect ? ratioSelect.value : '16:9',
-        video_length: 10, // 官方延长固定为 10 秒
+        video_length: editLengthSelect ? parseInt(editLengthSelect.value, 10) : 10,
         resolution_name: resolutionSelect ? resolutionSelect.value : '480p',
         preset: (!prompt || prompt.trim() === '') ? 'spicy' : (presetSelect ? presetSelect.value : 'normal'),
         reasoning_effort: typeof DEFAULT_REASONING_EFFORT !== 'undefined' ? DEFAULT_REASONING_EFFORT : null,
-        concurrent: 1,
+        concurrent,
         is_video_extension: true,
         extend_post_id: currentExtendPostId,
         video_extension_start_time: extensionStartTime,
@@ -1735,6 +2736,7 @@
       for (const tid of taskIds) {
         const placeholder = initPreviewSlot();
         setPreviewTitle(placeholder, buildHistoryTitle('splice', serial));
+        setPreviewPrompt(placeholder, prompt);
         if (placeholder) placeholder.dataset.taskId = tid;
         spliceRun.placeholders.set(tid, placeholder);
       }
@@ -1833,11 +2835,12 @@
                     editVideo.src = videoUrl;
                     editVideo.load();
                   }
-                  // 从新视频 URL 提取 postId 用于链式延长
-                  const newPostId = extractPostIdFromFileName(videoUrl);
+                  // 优先从 create-link 元数据对应的 post_id，最后才回退到 URL
+                  const newPostId = applyResolvedVideoIdentity({ url: videoUrl }, 'extend-sse');
                   if (newPostId) {
-                    currentExtendPostId = newPostId;  // 更新当前 postId
-                    currentFileAttachmentId = newPostId;
+                    if (item) {
+                      item.dataset.postId = newPostId;
+                    }
                     console.log('[SSE 调试] 从新视频成功提取到新的 extend_post_id:', newPostId);
                   } else {
                     console.warn('[SSE 调试] 未能从新视频地址提取出新的 extend_post_id!', videoUrl);
@@ -1997,6 +3000,65 @@
     });
   }
 
+  async function handleEditVideoRename() {
+      const meta = getCurrentEditVideoMeta();
+      if (!meta.url) {
+        toast('请先选择一个已生成视频', 'warning');
+        return;
+      }
+      const currentTitle = resolveEditVideoDisplayName(meta);
+      const nextTitle = await openRenameDialog(currentTitle === '-' ? '' : currentTitle);
+      if (nextTitle === null) return;
+      const safeTitle = String(nextTitle || '').trim();
+      try {
+        const result = await persistVideoStoredTitle({
+          postId: meta.postId,
+          shareLink: meta.shareLink,
+          originalPostId: meta.originalPostId,
+          name: meta.name,
+          url: meta.url,
+        }, safeTitle);
+        applyRenamedVideoState(meta, String(result.display_name || ''));
+        toast(safeTitle ? '已更新视频名称' : '已恢复默认名称', 'success');
+      } catch (error) {
+        console.warn('[工作区视频重命名] 保存失败', {
+          error: String(error && error.message ? error.message : error || ''),
+          postId: meta.postId,
+          shareLink: meta.shareLink,
+          originalPostId: meta.originalPostId,
+          name: meta.name,
+          url: meta.url,
+        });
+        toast('视频名称保存失败', 'error');
+      }
+  }
+
+  function bindRenameGesture(element, handler) {
+    if (!(element instanceof HTMLElement) || typeof handler !== 'function') return;
+    element.addEventListener('dblclick', handler);
+    element.addEventListener('touchend', (event) => {
+      if (!event.cancelable) return;
+      const now = Date.now();
+      if (now - editVideoNameTapTimer > 320) {
+        editVideoNameTapCount = 0;
+      }
+      editVideoNameTapTimer = now;
+      editVideoNameTapCount += 1;
+      if (editVideoNameTapCount >= 2) {
+        editVideoNameTapCount = 0;
+        event.preventDefault();
+        handler(event);
+      }
+    }, { passive: false });
+  }
+
+  if (editVideoName) {
+    bindRenameGesture(editVideoName, handleEditVideoRename);
+  }
+  if (editVideoNameCard) {
+    bindRenameGesture(editVideoNameCard, handleEditVideoRename);
+  }
+
   if (editTimeline) {
     editTimeline.addEventListener('input', () => {
       if (!editVideo) return;
@@ -2137,7 +3199,12 @@
       if (!target.classList.contains('cache-video-use')) return;
       const row = target.closest('.cache-video-item');
       if (!row) return;
-      useCachedVideo(row.getAttribute('data-url') || '', row.getAttribute('data-name') || '');
+      useCachedVideo(row.getAttribute('data-url') || '', row.getAttribute('data-name') || '', {
+        postId: row.getAttribute('data-post-id') || '',
+        shareLink: row.getAttribute('data-share-link') || '',
+        originalPostId: row.getAttribute('data-original-post-id') || '',
+        displayName: row.getAttribute('data-display-name') || '',
+      });
     });
   }
 
@@ -2155,7 +3222,13 @@
           return;
         }
         // 提取 postId 用于延长
-        const postId = extractPostIdFromFileName(bUrl);
+        const postId = resolveVideoPostId({
+          postId: item.dataset.postId || '',
+          shareLink: item.dataset.shareLink || '',
+          originalPostId: item.dataset.originalPostId || '',
+          name: item.dataset.name || '',
+          url: bUrl,
+        });
         if (postId) {
           currentExtendPostId = postId;
           currentFileAttachmentId = postId;
@@ -2178,8 +3251,52 @@
         openEditPanel();
         return;
       }
+        if (target.classList.contains('video-rename')) {
+          event.preventDefault();
+          const currentTitle = String(item.querySelector('.video-item-title')?.textContent || '').trim();
+          const nextTitle = await openRenameDialog(currentTitle);
+          if (nextTitle === null) return;
+          const safeTitle = String(nextTitle || '').trim();
+          try {
+            const result = await persistVideoStoredTitle({
+              postId: item.dataset.postId || '',
+              shareLink: item.dataset.shareLink || '',
+              originalPostId: item.dataset.originalPostId || '',
+              name: item.dataset.name || '',
+              url: item.dataset.url || '',
+            }, safeTitle);
+            applyRenamedVideoState({
+              item,
+              postId: item.dataset.postId || '',
+              shareLink: item.dataset.shareLink || '',
+              originalPostId: item.dataset.originalPostId || '',
+              name: item.dataset.name || '',
+              url: item.dataset.url || '',
+            }, String(result.display_name || ''));
+          } catch (error) {
+            console.warn('[视频重命名] 保存失败', {
+              error: String(error && error.message ? error.message : error || ''),
+              postId: item.dataset.postId || '',
+              shareLink: item.dataset.shareLink || '',
+              originalPostId: item.dataset.originalPostId || '',
+              name: item.dataset.name || '',
+              url: item.dataset.url || '',
+            });
+            toast('视频名称保存失败', 'error');
+            return;
+          }
+          toast(safeTitle ? '已更新视频名称' : '已恢复默认名称', 'success');
+          return;
+        }
       if (!target.classList.contains('video-download')) {
-        bindEditVideoSource(selectedVideoUrl);
+        bindEditVideoSource(selectedVideoUrl, {
+          postId: item.dataset.postId || '',
+          shareLink: item.dataset.shareLink || '',
+          originalPostId: item.dataset.originalPostId || '',
+          name: item.dataset.name || '',
+          displayName: item.dataset.displayName || '',
+          defaultTitle: item.dataset.defaultTitle || '',
+        });
         return;
       }
       event.preventDefault();
@@ -2213,15 +3330,14 @@
 
   if (imageFileInput) {
     imageFileInput.addEventListener('change', async () => {
-      const file = imageFileInput.files && imageFileInput.files[0];
-      if (!file) {
+      const files = imageFileInput.files ? Array.from(imageFileInput.files) : [];
+      if (!files.length) {
         clearFileSelection();
         return;
       }
       try {
-        await applyReferenceImageFile(file, '上传图片');
+        await applyReferenceImageFiles(files, '上传图片');
       } catch (e) {
-        fileDataUrl = '';
         toast(String(e && e.message ? e.message : '文件读取失败'), 'error');
         clearReferencePreview();
       }
@@ -2242,7 +3358,7 @@
 
   if (applyParentBtn) {
     applyParentBtn.addEventListener('click', () => {
-      applyParentPostReference(parentPostInput ? parentPostInput.value : '');
+      applyParentPostReference(parentPostInput ? parentPostInput.value : '', { append: true });
     });
   }
 
@@ -2250,13 +3366,13 @@
     parentPostInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
-        applyParentPostReference(parentPostInput.value);
+        applyParentPostReference(parentPostInput.value, { append: true });
       }
     });
     parentPostInput.addEventListener('input', () => {
       const raw = parentPostInput.value.trim();
       if (!raw) {
-        if (!fileDataUrl) {
+        if (!referenceImages.length) {
           clearReferencePreview();
         }
         return;
@@ -2267,8 +3383,9 @@
       const text = String(event.clipboardData ? event.clipboardData.getData('text') || '' : '').trim();
       if (!text) return;
       event.preventDefault();
+      event.stopPropagation();
       parentPostInput.value = text;
-      applyParentPostReference(text, { silent: true });
+      applyParentPostReference(text, { silent: true, append: true });
     });
   }
 
@@ -2279,7 +3396,7 @@
         if (parentPostInput) {
           parentPostInput.value = '';
         }
-        if (!fileDataUrl) {
+        if (!referenceImages.length) {
           clearReferencePreview();
         }
         return;
@@ -2295,30 +3412,35 @@
       if (resolved.parentPostId && parentPostInput) {
         parentPostInput.value = resolved.parentPostId;
       }
-      if (raw && fileDataUrl) {
-        fileDataUrl = '';
-        if (imageFileInput) imageFileInput.value = '';
-        if (imageFileName) imageFileName.textContent = '未选择文件';
-      }
-      setReferencePreview(resolved.url || resolved.sourceUrl || raw, resolved.parentPostId || '');
+      setReferenceItems([{
+        id: makeReferenceId('url'),
+        previewUrl: resolved.url || resolved.sourceUrl || raw,
+        sourceUrl: resolved.sourceUrl || raw,
+        url: resolved.url || resolved.sourceUrl || raw,
+        parentPostId: resolved.parentPostId || '',
+        name: 'url'
+      }], resolved.parentPostId ? 'parent_post' : 'upload');
     });
     imageUrlInput.addEventListener('paste', (event) => {
       const text = String(event.clipboardData ? event.clipboardData.getData('text') || '' : '').trim();
       if (!text) return;
       event.preventDefault();
+      event.stopPropagation();
       imageUrlInput.value = text;
-      const applied = applyParentPostReference(text, { silent: true });
+      const applied = applyParentPostReference(text, { silent: true, append: true });
       if (!applied) {
         const resolved = resolveReferenceByText(text);
         if (resolved.parentPostId && parentPostInput) {
           parentPostInput.value = resolved.parentPostId;
         }
-        if (fileDataUrl) {
-          fileDataUrl = '';
-          if (imageFileInput) imageFileInput.value = '';
-          if (imageFileName) imageFileName.textContent = '未选择文件';
-        }
-        setReferencePreview(resolved.url || resolved.sourceUrl || text, resolved.parentPostId || '');
+        appendReferenceItems([{
+          id: makeReferenceId('url'),
+          previewUrl: resolved.url || resolved.sourceUrl || text,
+          sourceUrl: resolved.sourceUrl || text,
+          url: resolved.url || resolved.sourceUrl || text,
+          parentPostId: resolved.parentPostId || '',
+          name: 'url'
+        }], resolved.parentPostId ? 'parent_post' : 'upload');
       }
     });
   }
@@ -2326,11 +3448,11 @@
   document.addEventListener('paste', async (event) => {
     const dataTransfer = event.clipboardData;
     if (!dataTransfer) return;
-    const imageFile = pickImageFileFromDataTransfer(dataTransfer);
-    if (imageFile) {
+    const imageFiles = pickImageFilesFromDataTransfer(dataTransfer);
+    if (imageFiles.length) {
       event.preventDefault();
       try {
-        await applyReferenceImageFile(imageFile, '粘贴图片');
+        await applyReferenceImageFiles(imageFiles, '粘贴图片');
       } catch (e) {
         toast(String(e && e.message ? e.message : '图片读取失败'), 'error');
       }
@@ -2339,11 +3461,14 @@
     const text = String(dataTransfer.getData('text') || '').trim();
     if (!text) return;
     const target = event.target;
-    const allowTarget = target === parentPostInput || target === imageUrlInput || !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement);
-    if (!allowTarget || target === promptInput) {
+    const isTypingInPrompt = target === promptInput;
+    const isTypingInParentInput = target === parentPostInput;
+    const isTypingInImageUrlInput = target === imageUrlInput;
+    if (isTypingInPrompt) return;
+    if (!isTypingInParentInput && !isTypingInImageUrlInput && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable)) {
       return;
     }
-    const applied = applyParentPostReference(text, { silent: true });
+    const applied = applyParentPostReference(text, { silent: true, append: true });
     if (applied) {
       event.preventDefault();
     }
@@ -2379,13 +3504,13 @@
       event.preventDefault();
       refDragCounter = 0;
       setRefDragActive(false);
-      const file = pickImageFileFromDataTransfer(event.dataTransfer);
-      if (!file) {
+      const files = pickImageFilesFromDataTransfer(event.dataTransfer);
+      if (!files.length) {
         toast('未检测到可用图片文件', 'warning');
         return;
       }
       try {
-        await applyReferenceImageFile(file, '拖拽图片');
+        await applyReferenceImageFiles(files, '拖拽图片');
       } catch (e) {
         toast(String(e && e.message ? e.message : '图片读取失败'), 'error');
       }
@@ -2407,16 +3532,114 @@
     setRefDragActive(false);
   });
 
-  if (promptInput) {
-    promptInput.addEventListener('keydown', (event) => {
+  if (promptRichInput) {
+    promptRichInput.addEventListener('input', () => {
+      syncPromptTextareaFromRichInput();
+      renderReferenceMentionMenu();
+    });
+    promptRichInput.addEventListener('click', (event) => {
+      const chip = event.target instanceof Element ? event.target.closest('.prompt-mention-chip') : null;
+      if (chip) {
+        event.preventDefault();
+        selectPromptChip(chip);
+        hideReferenceMentionMenu();
+        return;
+      }
+      clearActivePromptChip();
+      renderReferenceMentionMenu();
+    });
+    promptRichInput.addEventListener('focus', () => {
+      renderReferenceMentionMenu();
+    });
+    promptRichInput.addEventListener('blur', () => {
+      window.setTimeout(() => hideReferenceMentionMenu(), 120);
+    });
+    promptRichInput.addEventListener('keydown', (event) => {
+      const hasOpenMentionMenu = referenceMentionMenu && !referenceMentionMenu.classList.contains('hidden');
+      if (hasOpenMentionMenu && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+        const total = referenceMentionMenu.querySelectorAll('.reference-mention-item').length;
+        if (total > 0) {
+          event.preventDefault();
+          if (event.key === 'ArrowDown') {
+            activeMentionIndex = (activeMentionIndex + 1 + total) % total;
+          } else {
+            activeMentionIndex = (activeMentionIndex - 1 + total) % total;
+          }
+          renderReferenceMentionMenu();
+          return;
+        }
+      }
+      if (hasOpenMentionMenu && event.key === 'Enter') {
+        const active = referenceMentionMenu.querySelector('.reference-mention-item.is-active .reference-mention-label');
+        if (active) {
+          event.preventDefault();
+          const candidate = getPromptMentionCandidates().find((item) => item.label === (active.textContent || ''));
+          if (candidate) {
+            insertMentionLabel(candidate);
+          }
+          return;
+        }
+      }
+      if (hasOpenMentionMenu && event.key === 'Escape') {
+        hideReferenceMentionMenu();
+        return;
+      }
+      const selectedChip = getSelectedPromptChip();
+      if ((event.key === 'Backspace' || event.key === 'Delete') && selectedChip) {
+        event.preventDefault();
+        selectedChip.remove();
+        syncPromptTextareaFromRichInput();
+        return;
+      }
+      if (event.key === 'Backspace' && hasEditableTextNearSelection('backward')) {
+        return;
+      }
+      if (event.key === 'Delete' && hasEditableTextNearSelection('forward')) {
+        return;
+      }
+      if (event.key === 'Backspace' || event.key === 'Delete') {
+        const direction = event.key === 'Backspace' ? 'backward' : 'forward';
+        const adjacentChip = getChipAdjacentToSelection(direction);
+        if (adjacentChip) {
+          event.preventDefault();
+          if (adjacentChip.classList.contains('is-active')) {
+            adjacentChip.remove();
+            syncPromptTextareaFromRichInput();
+          } else {
+            selectPromptChip(adjacentChip);
+          }
+          return;
+        }
+      }
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        const adjacentChip = getChipAdjacentToSelection(event.key === 'ArrowLeft' ? 'backward' : 'forward');
+        if (adjacentChip) {
+          event.preventDefault();
+          selectPromptChip(adjacentChip);
+          return;
+        }
+      }
       if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
         event.preventDefault();
         startConnection();
       }
     });
   }
+  if (promptInput) {
+    promptInput.addEventListener('input', () => {
+      syncPromptRichInputFromTextarea();
+      renderReferenceMentionMenu();
+    });
+  }
 
-  [ratioSelect, lengthSelect, resolutionSelect, presetSelect, concurrentSelect]
+  document.addEventListener('click', (event) => {
+    if (!referenceMentionMenu || referenceMentionMenu.classList.contains('hidden')) return;
+    if (promptRichInput && promptRichInput.contains(event.target)) return;
+    if (referenceMentionMenu.contains(event.target)) return;
+    hideReferenceMentionMenu();
+  });
+
+  [ratioSelect, lengthSelect, resolutionSelect, presetSelect, concurrentSelect, singleImageModeSelect]
     .filter(Boolean)
     .forEach((el) => {
       el.addEventListener('change', updateMeta);
@@ -2427,6 +3650,7 @@
   refreshAllDeleteZoneTracks();
   syncTimelineAvailability();
   setSpliceButtonState('idle');
+  syncPromptRichInputFromTextarea();
 
   if (spliceBtn) {
     spliceBtn.addEventListener('click', () => {
@@ -2439,11 +3663,176 @@
   }
   if (imageUrlInput && imageUrlInput.value.trim()) {
     const resolved = resolveReferenceByText(imageUrlInput.value.trim());
-    setReferencePreview(resolved.url || resolved.sourceUrl || imageUrlInput.value.trim(), resolved.parentPostId || '');
+    setReferenceItems([{
+      id: makeReferenceId('init'),
+      previewUrl: resolved.url || resolved.sourceUrl || imageUrlInput.value.trim(),
+      sourceUrl: resolved.sourceUrl || imageUrlInput.value.trim(),
+      url: resolved.url || resolved.sourceUrl || imageUrlInput.value.trim(),
+      parentPostId: resolved.parentPostId || '',
+      name: 'init'
+    }], resolved.parentPostId ? 'parent_post' : 'upload');
     if (resolved.parentPostId && parentPostInput && !parentPostInput.value.trim()) {
       parentPostInput.value = resolved.parentPostId;
     }
   } else {
+    renderReferenceStrip();
     clearReferencePreview();
   }
+
+  // ─── 移动端底部 Sticky 操作栏逻辑 ───────────────────────────────────────
+  (function initMobileActionBar() {
+    const bar = document.getElementById('mobileActionBar');
+    if (!bar) return;
+
+    const slotGenerate    = document.getElementById('mobileBarGenerate');
+    const slotSplice      = document.getElementById('mobileBarSplice');
+    const mobileStart     = document.getElementById('mobileStartBtn');
+    const mobileStop      = document.getElementById('mobileStopBtn');
+    const mobileSplice    = document.getElementById('mobileSpliceBtn');
+    const settingsBtn     = document.getElementById('mobileSettingsBtn');
+    const settingsOverlay = document.getElementById('mobileSettingsOverlay');
+    // settings-card：作为 bottom sheet 使用
+    const settingsCard = document.querySelector('.video-settings-card');
+    let scOriginalParent = null;
+    let scOriginalNextSibling = null;
+
+    function isMobile() {
+      return window.matchMedia('(max-width: 768px)').matches;
+    }
+
+    // ── 将 settings-card 移到 body 直接子，避免祖先层叠上下文干扰 position:fixed ──
+    function moveCardToBody() {
+      if (!settingsCard || settingsCard.parentElement === document.body) return;
+      scOriginalParent = settingsCard.parentElement;
+      scOriginalNextSibling = settingsCard.nextElementSibling;
+      document.body.appendChild(settingsCard);
+    }
+
+    function moveCardBack() {
+      if (!settingsCard || settingsCard.parentElement !== document.body) return;
+      if (scOriginalParent) {
+        scOriginalNextSibling
+          ? scOriginalParent.insertBefore(settingsCard, scOriginalNextSibling)
+          : scOriginalParent.appendChild(settingsCard);
+      }
+    }
+
+    // ── 齿轮：生成参数 Bottom Sheet 开关 ──
+    function openSettingsSheet() {
+      document.body.classList.add('mobile-settings-open');
+      if (settingsBtn) settingsBtn.setAttribute('aria-expanded', 'true');
+    }
+
+    function closeSettingsSheet() {
+      document.body.classList.remove('mobile-settings-open');
+      if (settingsBtn) settingsBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    if (settingsBtn) {
+      settingsBtn.addEventListener('click', () => {
+        document.body.classList.contains('mobile-settings-open')
+          ? closeSettingsSheet()
+          : openSettingsSheet();
+      });
+    }
+
+    // 点击遮罩关闭
+    if (settingsOverlay) {
+      settingsOverlay.addEventListener('click', closeSettingsSheet);
+    }
+
+    // Esc 键关闭
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && document.body.classList.contains('mobile-settings-open')) {
+        closeSettingsSheet();
+      }
+    });
+
+    // resize：移动端时把节点移到 body，桌面端时关闭 sheet 并移回原位
+    window.addEventListener('resize', () => {
+      if (isMobile()) {
+        moveCardToBody();
+      } else {
+        closeSettingsSheet();
+        moveCardBack();
+      }
+    });
+
+    // ── 按钮代理：点击 sticky bar 按钮 = 点击原始按钮 ──
+    if (mobileStart) {
+      mobileStart.addEventListener('click', () => {
+        const running = stopBtn && !stopBtn.classList.contains('hidden');
+        if (running) {
+          if (stopBtn && !stopBtn.disabled) stopBtn.click();
+        } else {
+          if (startBtn && !startBtn.disabled) startBtn.click();
+        }
+      });
+    }
+    if (mobileSplice) {
+      mobileSplice.addEventListener('click', () => {
+        if (spliceBtn && !spliceBtn.disabled) spliceBtn.click();
+      });
+    }
+
+    // ── 同步生成按钮状态（running / idle）到一体切换按钮 ──
+    function syncGenerateSlotState() {
+      if (!mobileStart) return;
+      const running = stopBtn && !stopBtn.classList.contains('hidden');
+      // 切换图标
+      const playIcon = mobileStart.querySelector('.mobile-gen-play');
+      const stopIcon = mobileStart.querySelector('.mobile-gen-stop');
+      const label = mobileStart.querySelector('.mobile-gen-label');
+      if (playIcon) playIcon.style.display = running ? 'none' : '';
+      if (stopIcon) stopIcon.style.display = running ? '' : 'none';
+      if (label) label.textContent = running ? '停止' : '开始生成';
+      // 切换样式：running 时改为 outline 风格
+      mobileStart.className = running
+        ? 'geist-button-outline mobile-action-btn gap-2'
+        : 'geist-button mobile-action-btn gap-2';
+      mobileStart.disabled = !running && Boolean(startBtn && startBtn.disabled);
+    }
+
+    if (startBtn || stopBtn) {
+      const syncObserver = new MutationObserver(syncGenerateSlotState);
+      [startBtn, stopBtn].filter(Boolean).forEach((el) => {
+        syncObserver.observe(el, { attributes: true, attributeFilter: ['class', 'disabled'] });
+      });
+    }
+
+    // ── IntersectionObserver：监听 #editPanel 可见性，切换操作插槽 ──
+    const targetPanel = document.getElementById('editPanel');
+    if (targetPanel && 'IntersectionObserver' in window) {
+      let spliceVisible = false;
+      const io = new IntersectionObserver(
+        (entries) => {
+          if (!isMobile()) return;
+          entries.forEach((entry) => { spliceVisible = entry.isIntersecting; });
+          if (slotGenerate) slotGenerate.classList.toggle('mobile-action-slot--active', !spliceVisible);
+          if (slotSplice)   slotSplice.classList.toggle('mobile-action-slot--active', spliceVisible);
+        },
+        { threshold: 0.7 }
+      );
+      io.observe(targetPanel);
+    }
+
+    // ── 延长视频 sticky 按钮文本 & 状态同步 ──
+    function syncSpliceBtnState() {
+      if (!mobileSplice || !spliceBtn) return;
+      mobileSplice.disabled = spliceBtn.disabled;
+      const span = spliceBtn.querySelector('span');
+      const mSpan = mobileSplice.querySelector('span');
+      if (span && mSpan) mSpan.textContent = span.textContent;
+    }
+    if (spliceBtn) {
+      new MutationObserver(syncSpliceBtnState)
+        .observe(spliceBtn, { subtree: true, childList: true, attributes: true, attributeFilter: ['disabled'] });
+    }
+
+    // 初始化状态
+    if (isMobile()) moveCardToBody(); // 移到 body 直接子，确保 position:fixed 相对视口
+    syncGenerateSlotState();
+    syncSpliceBtnState();
+  })();
+
 })();
