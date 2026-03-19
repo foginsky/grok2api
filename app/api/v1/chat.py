@@ -397,7 +397,7 @@ def validate_request(request: ChatCompletionRequest):
 
         # 字符串内容
         if isinstance(content, str):
-            if not content.strip():
+            if not content.strip() and msg.role != "assistant":
                 raise ValidationException(
                     message="Message content cannot be empty",
                     param=f"messages.{idx}.content",
@@ -518,7 +518,7 @@ def validate_request(request: ChatCompletionRequest):
                         "file.file_data",
                         f"messages.{idx}.content.{block_idx}.file.file_data",
                     )
-        elif content is None and msg.role == "tool":
+        elif content is None and (msg.role == "tool" or msg.tool_calls):
             pass
         elif not isinstance(content, list):
             raise ValidationException(
