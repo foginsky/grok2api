@@ -1890,9 +1890,17 @@
         return { url: urlMatch[1] };
       }
     }
-    const urlMatches = buffer.match(/https?:\/\/[^\s<)]+/g);
-    if (urlMatches && urlMatches.length) {
-      return { url: urlMatches[urlMatches.length - 1] };
+    const mp4Matches = buffer.match(/https?:\/\/[^\s"'<>]+?\.mp4(?![a-zA-Z0-9])/gi);
+    if (mp4Matches && mp4Matches.length) {
+      return { url: mp4Matches[mp4Matches.length - 1] };
+    }
+    const localMatches = buffer.match(/(?:https?:\/\/[^\s"'<>]+)?\/v1\/files\/video\/[^\s"'<>]+?\.mp4(?![a-zA-Z0-9])/gi);
+    if (localMatches && localMatches.length) {
+      const last = localMatches[localMatches.length - 1];
+      if (/^https?:\/\//i.test(last)) {
+        return { url: last };
+      }
+      return { url: `${window.location.origin}${last}` };
     }
     return null;
   }
@@ -1902,9 +1910,9 @@
     if (!raw) return '';
     const info = extractVideoInfo(raw);
     if (info && info.url) return info.url;
-    const mp4 = raw.match(/https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/i);
+    const mp4 = raw.match(/https?:\/\/[^\s"'<>]+\.mp4(?![a-zA-Z0-9])/i);
     if (mp4 && mp4[0]) return mp4[0];
-    const local = raw.match(/\/v1\/files\/video\/[^\s"'<>]+/i);
+    const local = raw.match(/\/v1\/files\/video\/[^\s"'<>]+(?![a-zA-Z0-9])/i);
     if (local && local[0]) {
       if (local[0].startsWith('http')) return local[0];
       return `${window.location.origin}${local[0]}`;
@@ -2305,7 +2313,7 @@
     }
 
     if (taskState.collectingContent) {
-      taskState.contentBuffer += text;
+      taskState.contentBuffer += `${text}\n`;
       const info = extractVideoInfo(taskState.contentBuffer);
       if (info) {
         if (info.html) {
@@ -2626,7 +2634,7 @@
         const choice = payload.choices && payload.choices[0];
         const delta = choice && choice.delta ? choice.delta : null;
         if (delta && delta.content) {
-          buffer += String(delta.content);
+          buffer += `${String(delta.content)}\n`;
           const info = extractVideoInfo(buffer);
           const payloadUrl = extractVideoUrlFromAnyText(JSON.stringify(payload));
           if ((info && info.url) || payloadUrl) {
@@ -2801,7 +2809,7 @@
               }
 
               if (taskState.collectingContent) {
-                taskState.contentBuffer += text;
+                taskState.contentBuffer += `${text}\n`;
                 const info = extractVideoInfo(taskState.contentBuffer);
                 let videoUrl = (info && info.url) ? info.url : extractVideoUrlFromAnyText(taskState.contentBuffer);
 

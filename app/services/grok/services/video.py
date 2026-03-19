@@ -1265,6 +1265,20 @@ class VideoService:
 
                 # Process response.
                 if is_stream:
+                    stream_iter = response.__aiter__()
+                    try:
+                        first_chunk = await stream_iter.__anext__()
+                    except StopAsyncIteration:
+                        first_chunk = None
+
+                    async def _merged_stream(first, remaining):
+                        if first is not None:
+                            yield first
+                        async for chunk in remaining:
+                            yield chunk
+
+                    combined_response = _merged_stream(first_chunk, stream_iter)
+
                     processor = VideoStreamProcessor(
                         model,
                         token,
@@ -1272,7 +1286,7 @@ class VideoService:
                         upscale_on_finish=should_upscale,
                     )
                     return wrap_stream_with_usage(
-                        processor.process(response), token_mgr, token, model
+                        processor.process(combined_response), token_mgr, token, model
                     )
 
                 result = await VideoCollectProcessor(
@@ -1295,10 +1309,19 @@ class VideoService:
 
             except UpstreamException as e:
                 last_error = e
-                if rate_limited(e):
-                    await token_mgr.mark_rate_limited(token)
+                status_code = (
+                    e.details.get("status")
+                    if e.details
+                    else getattr(e, "status_code", None)
+                )
+                if rate_limited(e) or status_code == 401:
+                    if rate_limited(e):
+                        await token_mgr.mark_rate_limited(token)
+                    else:
+                        await token_mgr.record_fail(token, 401, "video_auth_failed_401")
                     logger.warning(
-                        f"Token {_token_tag(token)} rate limited (429), "
+                        f"Token {_token_tag(token)} "
+                        f"{'rate limited (429)' if rate_limited(e) else 'auth failed (401)'}, "
                         f"trying next token (attempt {attempt + 1}/{max_token_retries})"
                     )
                     continue
