@@ -61,6 +61,7 @@ class TokenInfo(BaseModel):
     # 失败追踪
     fail_count: int = 0
     last_fail_at: Optional[int] = None
+    last_fail_status: Optional[int] = None
     last_fail_reason: Optional[str] = None
 
     # 冷却管理
@@ -126,6 +127,8 @@ class TokenInfo(BaseModel):
         self.quota = max(0, int(quota))
         self.status = TokenStatus.ACTIVE
         self.fail_count = 0
+        self.last_fail_at = None
+        self.last_fail_status = None
         self.last_fail_reason = None
 
     def record_fail(
@@ -134,14 +137,14 @@ class TokenInfo(BaseModel):
         reason: str = "",
         threshold: Optional[int] = None,
     ):
-        """记录失败，达到阈值后自动标记为 expired"""
-        # 仅 401 计入失败
+        """记录认证失败，仅 401 会留下失效痕迹并计入失败次数。"""
         if status_code != 401:
             return
 
-        self.fail_count += 1
         self.last_fail_at = int(datetime.now().timestamp() * 1000)
+        self.last_fail_status = status_code
         self.last_fail_reason = reason
+        self.fail_count += 1
 
         limit = FAIL_THRESHOLD if threshold is None else threshold
         if self.fail_count >= limit:
@@ -151,6 +154,7 @@ class TokenInfo(BaseModel):
         """记录成功，清空失败计数并根据配额更新状态"""
         self.fail_count = 0
         self.last_fail_at = None
+        self.last_fail_status = None
         self.last_fail_reason = None
 
         if is_usage:

@@ -81,6 +81,30 @@ function countSelected(tokens) {
   return count;
 }
 
+function normalizeLastFailStatus(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function hasInvalidAuthFailureStatus(token) {
+  const lastFailStatus = normalizeLastFailStatus(token && token.last_fail_status);
+  return lastFailStatus === 401;
+}
+
+function getInvalidAuthFailedTokens() {
+  return flatTokens.filter(hasInvalidAuthFailureStatus);
+}
+
 function setSelectedForTokens(tokens, selected) {
   tokens.forEach(t => {
     t._selected = selected;
@@ -156,6 +180,7 @@ function processTokens(data) {
             created_at: t.created_at,
             last_used_at: t.last_used_at,
             last_fail_at: t.last_fail_at,
+            last_fail_status: normalizeLastFailStatus(t.last_fail_status),
             last_fail_reason: t.last_fail_reason,
             last_sync_at: t.last_sync_at,
             last_asset_clear_at: t.last_asset_clear_at
@@ -512,6 +537,10 @@ function batchDelete() {
   startBatchDelete();
 }
 
+function cleanInvalidTokens() {
+  startCleanInvalidTokens();
+}
+
 // Reconstruct object structure and save
 async function syncToServer() {
   const newTokens = {};
@@ -529,6 +558,7 @@ async function syncToServer() {
     if (typeof t.created_at === 'number') payload.created_at = t.created_at;
     if (typeof t.last_used_at === 'number') payload.last_used_at = t.last_used_at;
     if (typeof t.last_fail_at === 'number') payload.last_fail_at = t.last_fail_at;
+    if (typeof t.last_fail_status === 'number' && Number.isFinite(t.last_fail_status)) payload.last_fail_status = t.last_fail_status;
     if (typeof t.last_sync_at === 'number') payload.last_sync_at = t.last_sync_at;
     if (typeof t.last_asset_clear_at === 'number') payload.last_asset_clear_at = t.last_asset_clear_at;
     if (typeof t.last_fail_reason === 'string' && t.last_fail_reason) payload.last_fail_reason = t.last_fail_reason;
@@ -768,6 +798,8 @@ function finishBatchProcess(aborted = false, options = {}) {
   if (aborted) {
     if (action === 'delete') {
       showToast('已终止删除', 'info');
+    } else if (action === 'clean') {
+      showToast('已终止清理', 'info');
     } else if (action === 'enable') {
       showToast('已终止启用', 'info');
     } else if (action === 'disable') {
@@ -780,6 +812,8 @@ function finishBatchProcess(aborted = false, options = {}) {
   } else {
     if (action === 'delete') {
       showToast('删除完成', 'success');
+    } else if (action === 'clean') {
+      showToast('清理完成', 'success');
     } else if (action === 'enable') {
       showToast('启用完成', 'success');
     } else if (action === 'disable') {
@@ -828,12 +862,15 @@ function setActionButtonsState(selectedCount = null) {
   const nsfwBtn = byId('btn-batch-nsfw');
   const disableBtn = byId('btn-batch-disable');
   const enableBtn = byId('btn-batch-enable');
+  const cleanInvalidBtn = byId('btn-batch-clean-invalid');
   const deleteBtn = byId('btn-batch-delete');
+  const invalidCount = getInvalidAuthFailedTokens().length;
   if (exportBtn) exportBtn.disabled = disabled || count === 0;
   if (updateBtn) updateBtn.disabled = disabled || count === 0;
   if (nsfwBtn) nsfwBtn.disabled = disabled || count === 0;
   if (disableBtn) disableBtn.disabled = disabled || count === 0;
   if (enableBtn) enableBtn.disabled = disabled || count === 0;
+  if (cleanInvalidBtn) cleanInvalidBtn.disabled = disabled || invalidCount === 0;
   if (deleteBtn) deleteBtn.disabled = disabled || count === 0;
 }
 
@@ -868,6 +905,42 @@ async function startBatchDelete() {
   } catch (e) {
     finishBatchProcess(true, { silent: true });
     showToast('删除失败', 'error');
+  }
+}
+
+async function startCleanInvalidTokens() {
+  if (isBatchProcessing) {
+    showToast('当前有任务进行中', 'info');
+    return;
+  }
+
+  const invalidTokens = getInvalidAuthFailedTokens();
+  if (invalidTokens.length === 0) return showToast('暂无可清理失效 Token', 'info');
+
+  const ok = await confirmAction(`确定要清理 ${invalidTokens.length} 个 401 失效 Token 吗？`, { okText: '清理' });
+  if (!ok) return;
+
+  isBatchProcessing = true;
+  isBatchPaused = false;
+  currentBatchAction = 'clean';
+  batchQueue = invalidTokens.map(t => t.token);
+  batchTotal = batchQueue.length;
+  batchProcessed = 0;
+
+  updateBatchProgress();
+  setActionButtonsState();
+
+  try {
+    const toRemove = new Set(batchQueue);
+    flatTokens = flatTokens.filter(t => !toRemove.has(t.token));
+    await syncToServer();
+    batchProcessed = batchTotal;
+    updateBatchProgress();
+    finishBatchProcess(false, { silent: true });
+    showToast('清理完成', 'success');
+  } catch (e) {
+    finishBatchProcess(true, { silent: true });
+    showToast('清理失败', 'error');
   }
 }
 
