@@ -2,12 +2,15 @@
 Statsig ID generator for reverse interfaces.
 """
 
+import importlib
 import base64
 import random
 import string
 
-from app.core.logger import logger
 from app.core.config import get_config
+
+
+logger = importlib.import_module("app.core.logger").logger
 
 
 class StatsigGenerator:
@@ -31,20 +34,23 @@ class StatsigGenerator:
         Returns:
             Base64 encoded ID.
         """
+        override = get_config("app.statsig_override")
+        if override:
+            logger.debug("Using configured Statsig override")
+            return override
+
         dynamic = get_config("app.dynamic_statsig")
 
         # Dynamic Statsig ID
         if dynamic:
             logger.debug("Generating dynamic Statsig ID")
-            
+
             if random.choice([True, False]):
                 rand = StatsigGenerator._rand(5, alphanumeric=True)
                 message = f"e:TypeError: Cannot read properties of null (reading 'children['{rand}']')"
             else:
                 rand = StatsigGenerator._rand(10)
-                message = (
-                    f"e:TypeError: Cannot read properties of undefined (reading '{rand}')"
-                )
+                message = f"e:TypeError: Cannot read properties of undefined (reading '{rand}')"
 
             return base64.b64encode(message.encode()).decode()
 

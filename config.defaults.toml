@@ -24,6 +24,10 @@ stream = true
 thinking = true
 # 是否动态生成 Statsig 指纹
 dynamic_statsig = true
+# Reverse 请求头使用的 Sentry release；留空则不发送 Sentry 追踪头
+sentry_release = ""
+# 手动覆盖 Reverse 请求头中的 x-statsig-id；留空则保持现有生成逻辑
+statsig_override = ""
 # 过滤的特殊标签列表
 filter_tags = ["xaiartifact","xai:tool_usage_card","grok:render"]
 
@@ -46,6 +50,8 @@ refresh_interval = 3600
 timeout = 60
 # Cloudflare Clearance Cookie
 cf_clearance = ""
+# 额外拼接到 SSO Cookie 后的 Cloudflare 相关 Cookie 字符串
+cf_cookies = ""
 # curl_cffi 浏览器指纹
 browser = "chrome136"
 # User-Agent 字符串
@@ -80,6 +86,8 @@ refresh_interval_hours = 8
 super_refresh_interval_hours = 2
 # Token 连续失败阈值
 fail_threshold = 5
+# 视为鉴权类失败并计入失效阈值的 HTTP 状态码
+auth_failure_status_codes = [401,403]
 # Token 变更保存延迟（毫秒）
 save_delay_ms = 500
 # 多 worker 状态同步间隔（秒）
@@ -183,5 +191,7 @@ timeout = 60
 concurrent = 100
 # Usage 批量开启批次大小
 batch_size = 50
+# Usage 查询默认模型名
+model_name = "grok-4-1-thinking-1129"
 # Usage 请求超时时间（秒）
 timeout = 60

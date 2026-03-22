@@ -2,10 +2,10 @@
 
 import asyncio
 import time
+import importlib
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from app.core.logger import logger
 from app.services.token.models import (
     TokenInfo,
     EffortType,
@@ -21,6 +21,9 @@ from app.services.token.pool import TokenPool
 from app.services.grok.batch_services.usage import UsageService
 
 
+logger = importlib.import_module("app.core.logger").logger
+
+
 DEFAULT_REFRESH_BATCH_SIZE = 10
 DEFAULT_REFRESH_CONCURRENCY = 5
 DEFAULT_SUPER_REFRESH_INTERVAL_HOURS = 2
@@ -30,6 +33,23 @@ DEFAULT_SAVE_DELAY_MS = 500
 
 SUPER_POOL_NAME = "ssoSuper"
 BASIC_POOL_NAME = "ssoBasic"
+
+
+def _auth_failure_status_codes() -> set[int]:
+    values = get_config("token.auth_failure_status_codes", [401, 403])
+    if not isinstance(values, (list, tuple, set)):
+        values = [401, 403]
+
+    result: set[int] = set()
+    for value in values:
+        try:
+            result.add(int(value))
+        except (TypeError, ValueError):
+            continue
+
+    if not result:
+        return {401, 403}
+    return result
 
 
 def _default_quota_for_pool(pool_name: str) -> int:
@@ -419,14 +439,16 @@ class TokenManager:
                     e.details.get("is_token_expired", False) if e.details else False
                 )
 
-                if status == 401 and is_token_expired:
+                auth_failure_status_codes = _auth_failure_status_codes()
+
+                if status in auth_failure_status_codes and is_token_expired:
                     await self.record_fail(token_str, status, "rate_limits_auth_failed")
                     logger.warning(
                         f"Token {_token_tag(token_str)}: API sync failed (Confirmed Token Expired), skipping fallback"
                     )
                     return False
 
-                if status == 401:
+                if status in auth_failure_status_codes:
                     await self.record_fail(token_str, status, "rate_limits_auth_failed")
             logger.warning(
                 f"Token {_token_tag(token_str)}: API sync failed, fallback to local ({e})"
@@ -461,7 +483,7 @@ class TokenManager:
         for pool in self.pools.values():
             token = pool.get(raw_token)
             if token:
-                if status_code == 401:
+                if status_code in _auth_failure_status_codes():
                     threshold = get_config("token.fail_threshold", FAIL_THRESHOLD)
                     try:
                         threshold = int(threshold)
@@ -470,7 +492,7 @@ class TokenManager:
                     if threshold < 1:
                         threshold = 1
 
-                    token.record_fail(status_code, reason, threshold=threshold)
+                    token.record_fail(401, reason, threshold=threshold)
                     logger.warning(
                         f"Token {raw_token[:10]}...: recorded {status_code} failure "
                         f"({token.fail_count}/{threshold}) - {reason}"

@@ -1,8 +1,8 @@
 """
-Simple usage probe to inspect /rest/rate-limits response.
+Minimal chat probe: exercises AppChatReverse with an available token.
 
 Usage:
-  python scripts/test_usage_response.py
+  python scripts/test_chat_response.py
   (optional) TOKEN_POOL=ssoBasic|ssoSuper
 """
 
@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 
 from app.core.config import config  # noqa: E402
 from app.core.exceptions import UpstreamException  # noqa: E402
-from app.services.reverse.rate_limits import RateLimitsReverse  # noqa: E402
+from app.services.reverse.app_chat import AppChatReverse  # noqa: E402
 from app.services.token import get_token_manager  # noqa: E402
 
 
@@ -68,26 +68,32 @@ async def main() -> int:
 
     try:
         async with AsyncSession() as session:
-            response = await RateLimitsReverse.request(session, token)
+            stream = await AppChatReverse.request(
+                session=session,
+                token=token,
+                message="ping",
+                model="grok-4",
+            )
+            # AppChatReverse.request returns an async generator (stream_response)
+            first_line = None
+            async for chunk in stream:
+                if chunk:
+                    first_line = chunk
+                    break
     except UpstreamException as exc:
-        print(f"Probe failed: {exc}")
+        print(f"Probe failed (UpstreamException): {exc}")
         _print_failure_details(getattr(exc, "details", None))
         return 4
     except Exception as exc:
-        print(f"Probe failed: {exc}")
+        print(f"Probe failed ({type(exc).__name__}): {exc}")
         return 4
 
-    try:
-        data = response.json()
-    except Exception as exc:
-        print(f"Failed to parse JSON: {exc}")
-        raw = getattr(response, "text", "")
-        if raw:
-            print(raw)
+    if first_line is not None:
+        print(f"First response chunk: {first_line!r}")
+        return 0
+    else:
+        print("Stream yielded no data.")
         return 3
-
-    print(data)
-    return 0
 
 
 if __name__ == "__main__":

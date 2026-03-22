@@ -2,18 +2,20 @@
 Reverse interface: app chat conversations.
 """
 
-import orjson
+import importlib
 import inspect
 from typing import Any, Dict, List, Optional
-from curl_cffi.requests import AsyncSession
-from curl_cffi.requests.errors import RequestsError
 
-from app.core.logger import logger
 from app.core.config import get_config
 from app.core.exceptions import UpstreamException
 from app.services.token.service import TokenService
 from app.services.reverse.utils.headers import build_headers
 from app.services.reverse.utils.retry import retry_on_status
+
+
+orjson = importlib.import_module("orjson")
+RequestsError = importlib.import_module("curl_cffi.requests.errors").RequestsError
+logger = importlib.import_module("app.core.logger").logger
 
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
 
@@ -43,10 +45,10 @@ class AppChatReverse:
     def build_payload(
         message: str,
         model: str,
-        mode: str = None,
-        file_attachments: List[str] = None,
-        tool_overrides: Dict[str, Any] = None,
-        model_config_override: Dict[str, Any] = None,
+        mode: Optional[str] = None,
+        file_attachments: Optional[List[str]] = None,
+        tool_overrides: Optional[Dict[str, Any]] = None,
+        model_config_override: Optional[Dict[str, Any]] = None,
         image_generation_count: int | None = None,
     ) -> Dict[str, Any]:
         """Build chat payload for Grok app-chat API."""
@@ -107,10 +109,10 @@ class AppChatReverse:
         message: str,
         model: str,
         requested_model: str | None = None,
-        mode: str = None,
-        file_attachments: List[str] = None,
-        tool_overrides: Dict[str, Any] = None,
-        model_config_override: Dict[str, Any] = None,
+        mode: Optional[str] = None,
+        file_attachments: Optional[List[str]] = None,
+        tool_overrides: Optional[Dict[str, Any]] = None,
+        model_config_override: Optional[Dict[str, Any]] = None,
         image_generation_count: int | None = None,
     ) -> Any:
         """Send app chat request to Grok.
@@ -262,7 +264,7 @@ class AppChatReverse:
                     status = e.details["status"]
                 else:
                     status = getattr(e, "status_code", None)
-                if status == 401:
+                if status in {401, 403}:
                     try:
                         await TokenService.record_fail(
                             token, status, "app_chat_auth_failed"

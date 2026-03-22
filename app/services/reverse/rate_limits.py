@@ -2,15 +2,17 @@
 Reverse interface: rate limits.
 """
 
-import orjson
+import importlib
 from typing import Any
-from curl_cffi.requests import AsyncSession
 
-from app.core.logger import logger
 from app.core.config import get_config
 from app.core.exceptions import UpstreamException
 from app.services.reverse.utils.headers import build_headers
 from app.services.reverse.utils.retry import retry_on_status
+
+
+orjson = importlib.import_module("orjson")
+logger = importlib.import_module("app.core.logger").logger
 
 RATE_LIMITS_API = "https://grok.com/rest/rate-limits"
 
@@ -19,7 +21,7 @@ class RateLimitsReverse:
     """/rest/rate-limits reverse interface."""
 
     @staticmethod
-    async def request(session: AsyncSession, token: str) -> Any:
+    async def request(session: Any, token: str) -> Any:
         """Fetch rate limits from Grok.
 
         Args:
@@ -32,6 +34,7 @@ class RateLimitsReverse:
         try:
             # Get proxy
             base_proxy = str(get_config("proxy.base_proxy_url") or "").strip() or None
+            proxies = {"http": base_proxy, "https": base_proxy} if base_proxy else None
 
             # Build headers
             headers = build_headers(
@@ -44,7 +47,7 @@ class RateLimitsReverse:
             # Build payload
             payload = {
                 "requestKind": "DEFAULT",
-                "modelName": "grok-4-1-thinking-1129",
+                "modelName": get_config("usage.model_name") or "grok-4-1-thinking-1129",
             }
 
             # Curl Config
@@ -57,18 +60,32 @@ class RateLimitsReverse:
                     headers=headers,
                     data=orjson.dumps(payload),
                     timeout=timeout,
-                    proxy=base_proxy,
+                    proxies=proxies,
                     impersonate=browser,
                 )
 
                 if response.status_code != 200:
+                    try:
+                        body = response.text
+                    except Exception:
+                        body = None
+
+                    try:
+                        headers_summary = dict(response.headers)
+                    except Exception:
+                        headers_summary = None
+
                     logger.error(
                         f"RateLimitsReverse: Request failed, {response.status_code}",
                         extra={"error_type": "UpstreamException"},
                     )
                     raise UpstreamException(
                         message=f"RateLimitsReverse: Request failed, {response.status_code}",
-                        details={"status": response.status_code},
+                        details={
+                            "status": response.status_code,
+                            "body": body,
+                            "headers": headers_summary,
+                        },
                     )
 
                 return response

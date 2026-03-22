@@ -1,15 +1,18 @@
 """Shared header builders for reverse interfaces."""
 
+import importlib
 import re
 import uuid
-import orjson
 import random
 from urllib.parse import urlparse
 from typing import Dict, Optional
 
-from app.core.logger import logger
 from app.core.config import get_config
 from app.services.reverse.utils.statsig import StatsigGenerator
+
+
+orjson = importlib.import_module("orjson")
+logger = importlib.import_module("app.core.logger").logger
 
 
 _HEADER_CHAR_REPLACEMENTS = str.maketrans(
@@ -173,9 +176,11 @@ def build_headers(
     """
     trace_id = uuid.uuid4().hex
     span_id = uuid.uuid4().hex[:16]
+    sentry_release = _sanitize_header_value(
+        get_config("app.sentry_release") or "", field_name="app.sentry_release"
+    )
 
     headers = {
-        "Baggage": f"sentry-environment=production,sentry-release=c43385ae21231a335971832ae5b5e8bdba69852d,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c,sentry-trace_id={trace_id},sentry-org_id=4508179396558848,sentry-sampled=false,sentry-sample_rand={random.random()},sentry-sample_rate=0",
         "Origin": _sanitize_header_value(
             origin or "https://grok.com", field_name="origin"
         ),
@@ -184,9 +189,16 @@ def build_headers(
             referer or "https://grok.com/", field_name="referer"
         ),
         "Sec-Fetch-Mode": "cors",
-        "Sentry-Trace": f"{trace_id}-{span_id}-0",
-        "Traceparent": f"00-{trace_id}-{span_id}-00",
     }
+
+    if sentry_release:
+        headers.update(
+            {
+                "Baggage": f"sentry-environment=production,sentry-release={sentry_release},sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c,sentry-trace_id={trace_id},sentry-org_id=4508179396558848,sentry-sampled=false,sentry-sample_rand={random.random()},sentry-sample_rate=0",
+                "Sentry-Trace": f"{trace_id}-{span_id}-0",
+                "Traceparent": f"00-{trace_id}-{span_id}-00",
+            }
+        )
 
     user_agent = _sanitize_header_value(
         get_config("proxy.user_agent"), field_name="proxy.user_agent"
