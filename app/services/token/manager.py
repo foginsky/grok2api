@@ -4,7 +4,7 @@ import asyncio
 import time
 import importlib
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.services.token.models import (
     TokenInfo,
@@ -65,6 +65,26 @@ def _token_tag(token: str) -> str:
     if len(raw) <= 14:
         return raw
     return f"{raw[:6]}...{raw[-6:]}"
+
+
+def _raw_token(token: str) -> str:
+    return token[4:] if token.startswith("sso=") else token
+
+
+def _upstream_details_status(exc: UpstreamException) -> Optional[int]:
+    details = exc.details
+    status = None
+    if isinstance(details, dict):
+        status = details.get("status")
+    if status is None:
+        status = getattr(exc, "status_code", None)
+
+    try:
+        if status is None:
+            return None
+        return int(status)
+    except (TypeError, ValueError):
+        return None
 
 
 class TokenManager:
@@ -442,14 +462,14 @@ class TokenManager:
                 auth_failure_status_codes = _auth_failure_status_codes()
 
                 if status in auth_failure_status_codes and is_token_expired:
-                    await self.record_fail(token_str, status, "rate_limits_auth_failed")
+                    await self.record_fail(token_str, 401, "rate_limits_auth_failed")
                     logger.warning(
                         f"Token {_token_tag(token_str)}: API sync failed (Confirmed Token Expired), skipping fallback"
                     )
                     return False
 
                 if status in auth_failure_status_codes:
-                    await self.record_fail(token_str, status, "rate_limits_auth_failed")
+                    await self.record_fail(token_str, 401, "rate_limits_auth_failed")
             logger.warning(
                 f"Token {_token_tag(token_str)}: API sync failed, fallback to local ({e})"
             )
@@ -483,7 +503,7 @@ class TokenManager:
         for pool in self.pools.values():
             token = pool.get(raw_token)
             if token:
-                if status_code in _auth_failure_status_codes():
+                if status_code == 401:
                     threshold = get_config("token.fail_threshold", FAIL_THRESHOLD)
                     try:
                         threshold = int(threshold)
@@ -496,6 +516,10 @@ class TokenManager:
                     logger.warning(
                         f"Token {raw_token[:10]}...: recorded {status_code} failure "
                         f"({token.fail_count}/{threshold}) - {reason}"
+                    )
+                elif status_code in _auth_failure_status_codes():
+                    logger.info(
+                        f"Token {raw_token[:10]}...: auth-like error ({status_code}) - {reason} (not counted directly)"
                     )
                 else:
                     logger.info(
@@ -577,6 +601,98 @@ class TokenManager:
                 self._schedule_save()
                 return True
         return False
+
+    async def cleanup_invalid_tokens(
+        self,
+        *,
+        on_item: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> Dict[str, Any]:
+        """主动探测所有 Token，仅删除当前探测为原始 401 的 token。"""
+        usage_service = UsageService()
+        total = sum(pool.count() for pool in self.pools.values())
+        processed = 0
+        removed = 0
+        results: Dict[str, Dict[str, Any]] = {}
+        pending_removals: List[tuple[str, str, Dict[str, Any]]] = []
+        cancelled = False
+
+        for pool_name, pool in self.pools.items():
+            for token_info in pool.list():
+                if should_cancel and should_cancel():
+                    cancelled = True
+                    break
+
+                token = _raw_token(token_info.token)
+                item: Dict[str, Any] = {
+                    "token": token,
+                    "pool": pool_name,
+                    "removed": False,
+                    "probe_status": None,
+                    "reason": "kept_probe_ok",
+                }
+
+                try:
+                    await usage_service.get(token)
+                except UpstreamException as exc:
+                    status = _upstream_details_status(exc)
+                    item["probe_status"] = status
+                    item["error"] = str(exc)
+
+                    if status == 401:
+                        item["removed"] = True
+                        item["reason"] = "removed_probe_401"
+                        pending_removals.append((pool_name, token_info.token, item))
+                    elif status == 403:
+                        item["reason"] = "kept_probe_403"
+                    else:
+                        item["reason"] = "kept_probe_error"
+                except Exception as exc:
+                    item["error"] = str(exc)
+                    item["reason"] = "kept_probe_exception"
+
+                results[token] = item
+                processed += 1
+
+                if on_item:
+                    try:
+                        await on_item(item)
+                    except Exception:
+                        pass
+
+            if cancelled:
+                break
+
+        for pool_name, token, item in pending_removals:
+            pool = self.pools.get(pool_name)
+            if pool and pool.remove(token):
+                removed += 1
+                logger.warning(
+                    f"Pool '{pool_name}': removed token after active 401 probe ({_token_tag(token)})"
+                )
+                continue
+
+            item["removed"] = False
+            item["reason"] = "kept_remove_failed"
+            logger.warning(
+                f"Pool '{pool_name}': failed to remove token after active 401 probe ({_token_tag(token)})"
+            )
+
+        if removed > 0:
+            await self._save()
+
+        return {
+            "status": "success",
+            "summary": {
+                "total": total,
+                "processed": processed,
+                "removed": removed,
+                "deleted": removed,
+                "kept": processed - removed,
+                "cancelled": cancelled,
+            },
+            "results": results,
+        }
 
     async def add_tag(self, token: str, tag: str) -> bool:
         """

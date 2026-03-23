@@ -96,13 +96,22 @@ function normalizeLastFailStatus(value) {
   return null;
 }
 
-function hasInvalidAuthFailureStatus(token) {
-  const lastFailStatus = normalizeLastFailStatus(token && token.last_fail_status);
-  return lastFailStatus === 401;
+function getTokensForActiveCleanup() {
+  return Array.from(
+    new Set(
+      flatTokens
+        .map(t => (t && typeof t.token === 'string' ? t.token.trim() : ''))
+        .filter(Boolean)
+    )
+  );
 }
 
-function getInvalidAuthFailedTokens() {
-  return flatTokens.filter(hasInvalidAuthFailureStatus);
+function setupCleanInvalidButton() {
+  const btn = byId('btn-batch-clean-invalid');
+  if (!btn) return;
+  const hint = '主动探测全部 Token，仅删除当前返回 401 的失效项';
+  btn.title = hint;
+  btn.setAttribute('aria-label', hint);
 }
 
 function setSelectedForTokens(tokens, selected) {
@@ -135,6 +144,7 @@ async function init() {
   if (apiKey === null) return;
   setupEditPoolDefaults();
   setupConfirmDialog();
+  setupCleanInvalidButton();
   loadData();
 }
 
@@ -864,13 +874,13 @@ function setActionButtonsState(selectedCount = null) {
   const enableBtn = byId('btn-batch-enable');
   const cleanInvalidBtn = byId('btn-batch-clean-invalid');
   const deleteBtn = byId('btn-batch-delete');
-  const invalidCount = getInvalidAuthFailedTokens().length;
+  const cleanupProbeCount = getTokensForActiveCleanup().length;
   if (exportBtn) exportBtn.disabled = disabled || count === 0;
   if (updateBtn) updateBtn.disabled = disabled || count === 0;
   if (nsfwBtn) nsfwBtn.disabled = disabled || count === 0;
   if (disableBtn) disableBtn.disabled = disabled || count === 0;
   if (enableBtn) enableBtn.disabled = disabled || count === 0;
-  if (cleanInvalidBtn) cleanInvalidBtn.disabled = disabled || invalidCount === 0;
+  if (cleanInvalidBtn) cleanInvalidBtn.disabled = disabled || cleanupProbeCount === 0;
   if (deleteBtn) deleteBtn.disabled = disabled || count === 0;
 }
 
@@ -914,16 +924,19 @@ async function startCleanInvalidTokens() {
     return;
   }
 
-  const invalidTokens = getInvalidAuthFailedTokens();
-  if (invalidTokens.length === 0) return showToast('暂无可清理失效 Token', 'info');
+  const tokensToProbe = getTokensForActiveCleanup();
+  if (tokensToProbe.length === 0) return showToast('暂无可探测 Token', 'info');
 
-  const ok = await confirmAction(`确定要清理 ${invalidTokens.length} 个 401 失效 Token 吗？`, { okText: '清理' });
+  const ok = await confirmAction(
+    `将主动探测全部 ${tokensToProbe.length} 个 Token，仅删除当前返回 401 的失效项。确定继续吗？`,
+    { okText: '开始清理' }
+  );
   if (!ok) return;
 
   isBatchProcessing = true;
   isBatchPaused = false;
   currentBatchAction = 'clean';
-  batchQueue = invalidTokens.map(t => t.token);
+  batchQueue = tokensToProbe;
   batchTotal = batchQueue.length;
   batchProcessed = 0;
 
@@ -931,16 +944,87 @@ async function startCleanInvalidTokens() {
   setActionButtonsState();
 
   try {
-    const toRemove = new Set(batchQueue);
-    flatTokens = flatTokens.filter(t => !toRemove.has(t.token));
-    await syncToServer();
-    batchProcessed = batchTotal;
-    updateBatchProgress();
-    finishBatchProcess(false, { silent: true });
-    showToast('清理完成', 'success');
+    const res = await fetch('/v1/admin/tokens/cleanup/invalid/async', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...buildAuthHeaders(apiKey)
+      },
+      body: JSON.stringify({ tokens: batchQueue })
+    });
+
+    const data = await readJsonResponse(res);
+    if (!res.ok) {
+      const detail = data && (data.detail || data.message);
+      throw new Error(detail || `HTTP ${res.status}`);
+    }
+    if (!data) {
+      throw new Error(`空响应 (HTTP ${res.status})`);
+    }
+    if (data.status !== 'success') {
+      throw new Error(data.detail || '请求失败');
+    }
+
+    currentBatchTaskId = data.task_id;
+    BatchSSE.close(batchEventSource);
+    batchEventSource = BatchSSE.open(currentBatchTaskId, apiKey, {
+      onMessage: (msg) => {
+        if (msg.type === 'snapshot' || msg.type === 'progress') {
+          if (typeof msg.total === 'number') batchTotal = msg.total;
+          if (typeof msg.processed === 'number') batchProcessed = msg.processed;
+          updateBatchProgress();
+        } else if (msg.type === 'done') {
+          if (typeof msg.total === 'number') batchTotal = msg.total;
+          batchProcessed = batchTotal;
+          updateBatchProgress();
+          finishBatchProcess(false, { silent: true });
+
+          const summary = msg.result && msg.result.summary ? msg.result.summary : null;
+          const total = summary && typeof summary.total === 'number' ? summary.total : batchTotal;
+          const removed = summary && typeof summary.removed === 'number'
+            ? summary.removed
+            : summary && typeof summary.deleted === 'number'
+              ? summary.deleted
+              : summary && typeof summary.invalid === 'number'
+                ? summary.invalid
+                : null;
+
+          let text = `清理完成：已主动探测 ${total} 个 Token`;
+          if (removed !== null) {
+            text += `，删除 ${removed} 个当前 401 失效项`;
+          }
+          if (msg.warning) text += `\n⚠️ ${msg.warning}`;
+          showToast(text, msg.warning ? 'warning' : 'success');
+
+          currentBatchTaskId = null;
+          BatchSSE.close(batchEventSource);
+          batchEventSource = null;
+        } else if (msg.type === 'cancelled') {
+          finishBatchProcess(true, { silent: true });
+          showToast('已终止主动清理', 'info');
+          currentBatchTaskId = null;
+          BatchSSE.close(batchEventSource);
+          batchEventSource = null;
+        } else if (msg.type === 'error') {
+          finishBatchProcess(true, { silent: true });
+          showToast('清理失败: ' + (msg.error || '未知错误'), 'error');
+          currentBatchTaskId = null;
+          BatchSSE.close(batchEventSource);
+          batchEventSource = null;
+        }
+      },
+      onError: () => {
+        finishBatchProcess(true, { silent: true });
+        showToast('连接中断', 'error');
+        currentBatchTaskId = null;
+        BatchSSE.close(batchEventSource);
+        batchEventSource = null;
+      }
+    });
   } catch (e) {
     finishBatchProcess(true, { silent: true });
-    showToast('清理失败', 'error');
+    showToast(e.message || '请求失败', 'error');
+    currentBatchTaskId = null;
   }
 }
 

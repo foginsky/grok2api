@@ -161,7 +161,8 @@ const LOCALE_MAP = {
     "label": "Usage 配置",
     "concurrent": { title: "并发上限", desc: "批量刷新用量时的并发请求上限。推荐 10。" },
     "batch_size": { title: "批次大小", desc: "批量刷新用量的单批处理数量。推荐 50。" },
-    "timeout": { title: "请求超时", desc: "用量查询接口的超时时间（秒）。推荐 60。" }
+    "timeout": { title: "请求超时", desc: "用量查询接口的超时时间（秒）。推荐 60。" },
+    "model_name": { title: "探测模型", desc: "主动探测 Token 可用性时使用的模型名称，建议填写低成本模型。" }
   }
 };
 

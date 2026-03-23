@@ -213,15 +213,64 @@ async def refresh_tokens_async(data: dict):
             task.fail_task(str(e))
         finally:
             import asyncio
+
             asyncio.create_task(expire_task(task.id, 300))
 
     import asyncio
+
     asyncio.create_task(_run())
 
     return {
         "status": "success",
         "task_id": task.id,
         "total": len(unique_tokens),
+    }
+
+
+@router.post("/tokens/cleanup/invalid/async", dependencies=[Depends(verify_app_key)])
+async def cleanup_invalid_tokens_async(data: dict):
+    """主动探测所有 Token，仅清理当前探测返回原始 401 的失效 Token。"""
+    del data
+
+    mgr = await get_token_manager()
+    total = sum(pool.count() for pool in mgr.pools.values())
+
+    if total <= 0:
+        raise HTTPException(status_code=400, detail="No tokens available")
+
+    task = create_task(total)
+
+    async def _run():
+        try:
+
+            async def _on_item(item: dict):
+                task.record(True, item=item.get("token"), detail=item)
+
+            result = await mgr.cleanup_invalid_tokens(
+                on_item=_on_item,
+                should_cancel=lambda: task.cancelled,
+            )
+
+            if task.cancelled and result.get("summary", {}).get("cancelled"):
+                task.finish_cancelled()
+                return
+
+            task.finish(result)
+        except Exception as e:
+            task.fail_task(str(e))
+        finally:
+            import asyncio
+
+            asyncio.create_task(expire_task(task.id, 300))
+
+    import asyncio
+
+    asyncio.create_task(_run())
+
+    return {
+        "status": "success",
+        "task_id": task.id,
+        "total": total,
     }
 
 
@@ -409,9 +458,11 @@ async def enable_nsfw_async(data: dict):
             task.fail_task(str(e))
         finally:
             import asyncio
+
             asyncio.create_task(expire_task(task.id, 300))
 
     import asyncio
+
     asyncio.create_task(_run())
 
     return {
