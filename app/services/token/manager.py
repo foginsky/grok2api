@@ -19,6 +19,7 @@ from app.core.config import get_config
 from app.core.exceptions import UpstreamException
 from app.services.token.pool import TokenPool
 from app.services.grok.batch_services.usage import UsageService
+from app.services.grok.batch_services.cleanup_probe import CleanupProbeService
 
 
 logger = importlib.import_module("app.core.logger").logger
@@ -609,7 +610,11 @@ class TokenManager:
         should_cancel: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
         """主动探测所有 Token，仅删除当前探测为原始 401 的 token。"""
-        usage_service = UsageService()
+        probe_service = CleanupProbeService()
+        probe_model = (
+            str(get_config("usage.model_name") or "grok-3-mini").strip()
+            or "grok-3-mini"
+        )
         total = sum(
             1
             for pool in self.pools.values()
@@ -642,7 +647,7 @@ class TokenManager:
                 }
 
                 try:
-                    await usage_service.get(token, disable_retry=True)
+                    await probe_service.probe(token, probe_model, disable_retry=True)
                 except UpstreamException as exc:
                     status = _upstream_details_status(exc)
                     item["probe_status"] = status

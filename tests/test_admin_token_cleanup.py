@@ -49,7 +49,13 @@ def _install_dependency_stubs() -> None:
 
     if "app.core.config" not in sys.modules:
         config_module = types.ModuleType("app.core.config")
-        setattr(config_module, "get_config", lambda key, default=None: default)
+
+        def _get_config(key, default=None):
+            if key == "usage.model_name":
+                return "grok-4.1-fast"
+            return default
+
+        setattr(config_module, "get_config", _get_config)
         sys.modules["app.core.config"] = config_module
 
     if "app.core.storage" not in sys.modules:
@@ -80,11 +86,27 @@ def _install_dependency_stubs() -> None:
         usage_module = types.ModuleType("app.services.grok.batch_services.usage")
 
         class UsageService:
-            async def get(self, _token):
+            async def get(self, _token, disable_retry: bool = False):
                 return None
 
         setattr(usage_module, "UsageService", UsageService)
         sys.modules["app.services.grok.batch_services.usage"] = usage_module
+
+    if "app.services.grok.batch_services.cleanup_probe" not in sys.modules:
+        cleanup_probe_module = types.ModuleType(
+            "app.services.grok.batch_services.cleanup_probe"
+        )
+
+        class CleanupProbeService:
+            async def probe(
+                self, _token, probe_model: str, disable_retry: bool = False
+            ):
+                return None
+
+        setattr(cleanup_probe_module, "CleanupProbeService", CleanupProbeService)
+        sys.modules["app.services.grok.batch_services.cleanup_probe"] = (
+            cleanup_probe_module
+        )
 
     if "app.services.grok.batch_services.nsfw" not in sys.modules:
         nsfw_module = types.ModuleType("app.services.grok.batch_services.nsfw")
@@ -102,6 +124,19 @@ def _install_dependency_stubs() -> None:
         setattr(orjson_module, "dumps", lambda value: json.dumps(value).encode("utf-8"))
         sys.modules["orjson"] = orjson_module
 
+    if "curl_cffi.requests.errors" not in sys.modules:
+        curl_module = types.ModuleType("curl_cffi")
+        requests_module = types.ModuleType("curl_cffi.requests")
+        errors_module = types.ModuleType("curl_cffi.requests.errors")
+
+        class RequestsError(Exception):
+            pass
+
+        setattr(errors_module, "RequestsError", RequestsError)
+        sys.modules["curl_cffi"] = curl_module
+        sys.modules["curl_cffi.requests"] = requests_module
+        sys.modules["curl_cffi.requests.errors"] = errors_module
+
 
 def _load_test_modules():
     for module_name in [
@@ -113,6 +148,7 @@ def _load_test_modules():
         "app.services.token.pool",
         "app.services.token.models",
         "app.services.grok.batch_services.usage",
+        "app.services.grok.batch_services.cleanup_probe",
         "app.services.grok.batch_services.nsfw",
         "app.services.grok.batch_services",
         "app.services.grok",
@@ -159,6 +195,19 @@ class _FakeUsageService:
         self._responses = responses
 
     async def get(self, token: str, disable_retry: bool = False):
+        result = self._responses[token]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+class _FakeCleanupProbeService:
+    def __init__(self, responses, calls=None):
+        self._responses = responses
+        self._calls = calls if calls is not None else []
+
+    async def probe(self, token: str, probe_model: str, disable_retry: bool = False):
+        self._calls.append((token, probe_model, disable_retry))
         result = self._responses[token]
         if isinstance(result, Exception):
             raise result
@@ -221,8 +270,8 @@ class ActiveInvalidTokenCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(
             manager_module,
-            "UsageService",
-            lambda: _FakeUsageService(responses),
+            "CleanupProbeService",
+            lambda: _FakeCleanupProbeService(responses),
         ):
             result = await manager.cleanup_invalid_tokens()
 
@@ -289,8 +338,8 @@ class ActiveInvalidTokenCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(
             manager_module,
-            "UsageService",
-            lambda: _FakeUsageService(responses),
+            "CleanupProbeService",
+            lambda: _FakeCleanupProbeService(responses),
         ):
             result = await manager.cleanup_invalid_tokens()
 
@@ -304,23 +353,28 @@ class ActiveInvalidTokenCleanupTests(unittest.IsolatedAsyncioTestCase):
         manager = _build_manager(manager_module)
         calls = []
 
-        class _RecordingUsageService:
-            async def get(self, token: str, disable_retry: bool = False):
-                calls.append((token, disable_retry))
-                return {"remainingTokens": 1}
-
         with patch.object(
-            manager_module, "UsageService", lambda: _RecordingUsageService()
+            manager_module,
+            "CleanupProbeService",
+            lambda: _FakeCleanupProbeService(
+                {
+                    "remove-401": {"remainingTokens": 1},
+                    "keep-500": {"remainingTokens": 1},
+                    "keep-403": {"remainingTokens": 1},
+                    "keep-ok": {"remainingTokens": 1},
+                },
+                calls=calls,
+            ),
         ):
             await manager.cleanup_invalid_tokens()
 
         self.assertEqual(
             calls,
             [
-                ("remove-401", True),
-                ("keep-500", True),
-                ("keep-403", True),
-                ("keep-ok", True),
+                ("remove-401", "grok-4.1-fast", True),
+                ("keep-500", "grok-4.1-fast", True),
+                ("keep-403", "grok-4.1-fast", True),
+                ("keep-ok", "grok-4.1-fast", True),
             ],
         )
 
@@ -356,8 +410,8 @@ class AdminTokenCleanupAsyncApiTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(
                 manager_module,
-                "UsageService",
-                lambda: _FakeUsageService(responses),
+                "CleanupProbeService",
+                lambda: _FakeCleanupProbeService(responses),
             ),
             patch.object(
                 admin_token_module,
