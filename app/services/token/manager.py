@@ -613,6 +613,7 @@ class TokenManager:
         total = sum(pool.count() for pool in self.pools.values())
         processed = 0
         removed = 0
+        disabled = 0
         results: Dict[str, Dict[str, Any]] = {}
         pending_removals: List[tuple[str, str, Dict[str, Any]]] = []
         cancelled = False
@@ -628,6 +629,7 @@ class TokenManager:
                     "token": token,
                     "pool": pool_name,
                     "removed": False,
+                    "disabled": False,
                     "probe_status": None,
                     "reason": "kept_probe_ok",
                 }
@@ -644,7 +646,10 @@ class TokenManager:
                         item["reason"] = "removed_probe_401"
                         pending_removals.append((pool_name, token_info.token, item))
                     elif status == 403:
-                        item["reason"] = "kept_probe_403"
+                        token_info.status = TokenStatus.DISABLED
+                        item["disabled"] = True
+                        item["reason"] = "disabled_probe_403"
+                        disabled += 1
                     else:
                         item["reason"] = "kept_probe_error"
                 except Exception as exc:
@@ -678,7 +683,7 @@ class TokenManager:
                 f"Pool '{pool_name}': failed to remove token after active 401 probe ({_token_tag(token)})"
             )
 
-        if removed > 0:
+        if removed > 0 or disabled > 0:
             await self._save()
 
         return {
@@ -688,7 +693,8 @@ class TokenManager:
                 "processed": processed,
                 "removed": removed,
                 "deleted": removed,
-                "kept": processed - removed,
+                "disabled": disabled,
+                "kept": processed - removed - disabled,
                 "cancelled": cancelled,
             },
             "results": results,

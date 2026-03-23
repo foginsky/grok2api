@@ -190,7 +190,7 @@ def _build_manager(manager_module):
 
 
 class ActiveInvalidTokenCleanupTests(unittest.IsolatedAsyncioTestCase):
-    async def test_cleanup_removes_only_tokens_with_current_probe_401(self):
+    async def test_cleanup_removes_401_and_disables_403(self):
         _, _, manager_module, _, _ = _load_test_modules()
         manager = _build_manager(manager_module)
         responses = {
@@ -217,6 +217,10 @@ class ActiveInvalidTokenCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(manager.pools["ssoBasic"].get("remove-401"))
         self.assertIsNotNone(manager.pools["ssoSuper"].get("keep-403"))
+        self.assertEqual(
+            manager.pools["ssoSuper"].get("keep-403").status,
+            manager_module.TokenStatus.DISABLED,
+        )
         self.assertIsNotNone(manager.pools["ssoBasic"].get("keep-500"))
         self.assertIsNotNone(manager.pools["ssoSuper"].get("keep-ok"))
         manager._save.assert_awaited_once()
@@ -224,15 +228,19 @@ class ActiveInvalidTokenCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["summary"]["total"], 4)
         self.assertEqual(result["summary"]["removed"], 1)
         self.assertEqual(result["summary"]["deleted"], 1)
-        self.assertEqual(result["summary"]["kept"], 3)
+        self.assertEqual(result["summary"]["disabled"], 1)
+        self.assertEqual(result["summary"]["kept"], 2)
 
         self.assertTrue(by_token["remove-401"]["removed"])
         self.assertEqual(by_token["remove-401"]["probe_status"], 401)
         self.assertFalse(by_token["keep-403"]["removed"])
+        self.assertTrue(by_token["keep-403"]["disabled"])
         self.assertEqual(by_token["keep-403"]["probe_status"], 403)
         self.assertFalse(by_token["keep-500"]["removed"])
+        self.assertFalse(by_token["keep-500"].get("disabled", False))
         self.assertEqual(by_token["keep-500"]["probe_status"], 500)
         self.assertFalse(by_token["keep-ok"]["removed"])
+        self.assertFalse(by_token["keep-ok"].get("disabled", False))
         self.assertIsNone(by_token["keep-ok"]["probe_status"])
 
     async def test_cleanup_removes_token_when_401_is_on_status_code_field(self):
@@ -322,9 +330,11 @@ class AdminTokenCleanupAsyncApiTests(unittest.IsolatedAsyncioTestCase):
         by_token = result["results"]
         self.assertEqual(result["summary"]["removed"], 1)
         self.assertEqual(result["summary"]["deleted"], 1)
-        self.assertEqual(result["summary"]["kept"], 3)
+        self.assertEqual(result["summary"]["disabled"], 1)
+        self.assertEqual(result["summary"]["kept"], 2)
         self.assertTrue(by_token["remove-401"]["removed"])
         self.assertFalse(by_token["keep-403"]["removed"])
+        self.assertTrue(by_token["keep-403"]["disabled"])
         self.assertFalse(by_token["keep-500"]["removed"])
 
 

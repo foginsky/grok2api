@@ -988,10 +988,16 @@ async function startCleanInvalidTokens() {
               : summary && typeof summary.invalid === 'number'
                 ? summary.invalid
                 : null;
+          const disabled = summary && typeof summary.disabled === 'number'
+            ? summary.disabled
+            : null;
 
           let text = `清理完成：已主动探测 ${total} 个 Token`;
           if (removed !== null) {
             text += `，删除 ${removed} 个当前 401 失效项`;
+          }
+          if (disabled !== null) {
+            text += `，禁用 ${disabled} 个当前 403 受限项`;
           }
           if (msg.warning) text += `\n⚠️ ${msg.warning}`;
           showToast(text, msg.warning ? 'warning' : 'success');
