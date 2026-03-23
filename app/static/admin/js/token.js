@@ -100,6 +100,7 @@ function getTokensForActiveCleanup() {
   return Array.from(
     new Set(
       flatTokens
+        .filter(t => t && t.status === 'active')
         .map(t => (t && typeof t.token === 'string' ? t.token.trim() : ''))
         .filter(Boolean)
     )
@@ -109,7 +110,7 @@ function getTokensForActiveCleanup() {
 function setupCleanInvalidButton() {
   const btn = byId('btn-batch-clean-invalid');
   if (!btn) return;
-  const hint = '主动探测全部 Token，仅删除当前返回 401 的失效项';
+  const hint = '主动探测全部 Token：401 删除，400/403/404 禁用';
   btn.title = hint;
   btn.setAttribute('aria-label', hint);
 }
@@ -928,7 +929,7 @@ async function startCleanInvalidTokens() {
   if (tokensToProbe.length === 0) return showToast('暂无可探测 Token', 'info');
 
   const ok = await confirmAction(
-    `将主动探测全部 ${tokensToProbe.length} 个 Token，仅删除当前返回 401 的失效项。确定继续吗？`,
+    `将主动探测全部 ${tokensToProbe.length} 个 Token：当前返回 401 将删除，400/403/404 将禁用。确定继续吗？`,
     { okText: '开始清理' }
   );
   if (!ok) return;
@@ -997,7 +998,7 @@ async function startCleanInvalidTokens() {
             text += `，删除 ${removed} 个当前 401 失效项`;
           }
           if (disabled !== null) {
-            text += `，禁用 ${disabled} 个当前 403 受限项`;
+            text += `，禁用 ${disabled} 个当前 400/403/404 异常项`;
           }
           if (msg.warning) text += `\n⚠️ ${msg.warning}`;
           showToast(text, msg.warning ? 'warning' : 'success');

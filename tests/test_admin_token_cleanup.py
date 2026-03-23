@@ -158,7 +158,7 @@ class _FakeUsageService:
     def __init__(self, responses):
         self._responses = responses
 
-    async def get(self, token: str):
+    async def get(self, token: str, disable_retry: bool = False):
         result = self._responses[token]
         if isinstance(result, Exception):
             raise result
@@ -180,6 +180,11 @@ def _build_manager(manager_module):
         manager_module.TokenInfo(token="keep-403", last_fail_status=401, fail_count=3)
     )
     super_pool.add(manager_module.TokenInfo(token="keep-ok"))
+    super_pool.add(
+        manager_module.TokenInfo(
+            token="already-disabled", status=manager_module.TokenStatus.DISABLED
+        )
+    )
 
     manager.pools = {
         "ssoBasic": basic_pool,
@@ -190,15 +195,23 @@ def _build_manager(manager_module):
 
 
 class ActiveInvalidTokenCleanupTests(unittest.IsolatedAsyncioTestCase):
-    async def test_cleanup_removes_401_and_disables_403(self):
+    async def test_cleanup_removes_401_and_disables_400_403_404(self):
         _, _, manager_module, _, _ = _load_test_modules()
         manager = _build_manager(manager_module)
+        manager.pools["ssoBasic"].add(manager_module.TokenInfo(token="disable-400"))
+        manager.pools["ssoSuper"].add(manager_module.TokenInfo(token="disable-404"))
         responses = {
             "remove-401": manager_module.UpstreamException(
                 "unauthorized", details={"status": 401}
             ),
+            "disable-400": manager_module.UpstreamException(
+                "bad-request", details={"status": 400}
+            ),
             "keep-403": manager_module.UpstreamException(
                 "forbidden", details={"status": 403}
+            ),
+            "disable-404": manager_module.UpstreamException(
+                "not-found", details={"status": 404}
             ),
             "keep-500": manager_module.UpstreamException(
                 "server-error", details={"status": 500}
@@ -216,32 +229,47 @@ class ActiveInvalidTokenCleanupTests(unittest.IsolatedAsyncioTestCase):
         by_token = result["results"]
 
         self.assertIsNone(manager.pools["ssoBasic"].get("remove-401"))
+        self.assertEqual(
+            manager.pools["ssoBasic"].get("disable-400").status,
+            manager_module.TokenStatus.DISABLED,
+        )
         self.assertIsNotNone(manager.pools["ssoSuper"].get("keep-403"))
         self.assertEqual(
             manager.pools["ssoSuper"].get("keep-403").status,
+            manager_module.TokenStatus.DISABLED,
+        )
+        self.assertEqual(
+            manager.pools["ssoSuper"].get("disable-404").status,
             manager_module.TokenStatus.DISABLED,
         )
         self.assertIsNotNone(manager.pools["ssoBasic"].get("keep-500"))
         self.assertIsNotNone(manager.pools["ssoSuper"].get("keep-ok"))
         manager._save.assert_awaited_once()
 
-        self.assertEqual(result["summary"]["total"], 4)
+        self.assertEqual(result["summary"]["total"], 6)
         self.assertEqual(result["summary"]["removed"], 1)
         self.assertEqual(result["summary"]["deleted"], 1)
-        self.assertEqual(result["summary"]["disabled"], 1)
+        self.assertEqual(result["summary"]["disabled"], 3)
         self.assertEqual(result["summary"]["kept"], 2)
 
         self.assertTrue(by_token["remove-401"]["removed"])
         self.assertEqual(by_token["remove-401"]["probe_status"], 401)
+        self.assertFalse(by_token["disable-400"]["removed"])
+        self.assertTrue(by_token["disable-400"]["disabled"])
+        self.assertEqual(by_token["disable-400"]["probe_status"], 400)
         self.assertFalse(by_token["keep-403"]["removed"])
         self.assertTrue(by_token["keep-403"]["disabled"])
         self.assertEqual(by_token["keep-403"]["probe_status"], 403)
+        self.assertFalse(by_token["disable-404"]["removed"])
+        self.assertTrue(by_token["disable-404"]["disabled"])
+        self.assertEqual(by_token["disable-404"]["probe_status"], 404)
         self.assertFalse(by_token["keep-500"]["removed"])
         self.assertFalse(by_token["keep-500"].get("disabled", False))
         self.assertEqual(by_token["keep-500"]["probe_status"], 500)
         self.assertFalse(by_token["keep-ok"]["removed"])
         self.assertFalse(by_token["keep-ok"].get("disabled", False))
         self.assertIsNone(by_token["keep-ok"]["probe_status"])
+        self.assertNotIn("already-disabled", by_token)
 
     async def test_cleanup_removes_token_when_401_is_on_status_code_field(self):
         _, _, manager_module, _, _ = _load_test_modules()
@@ -271,17 +299,50 @@ class ActiveInvalidTokenCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["results"]["remove-401"]["probe_status"], 401)
         self.assertTrue(result["results"]["remove-401"]["removed"])
 
+    async def test_cleanup_uses_single_probe_mode_for_active_tokens(self):
+        _, _, manager_module, _, _ = _load_test_modules()
+        manager = _build_manager(manager_module)
+        calls = []
+
+        class _RecordingUsageService:
+            async def get(self, token: str, disable_retry: bool = False):
+                calls.append((token, disable_retry))
+                return {"remainingTokens": 1}
+
+        with patch.object(
+            manager_module, "UsageService", lambda: _RecordingUsageService()
+        ):
+            await manager.cleanup_invalid_tokens()
+
+        self.assertEqual(
+            calls,
+            [
+                ("remove-401", True),
+                ("keep-500", True),
+                ("keep-403", True),
+                ("keep-ok", True),
+            ],
+        )
+
 
 class AdminTokenCleanupAsyncApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_cleanup_endpoint_finishes_batch_with_summary_results(self):
         _, _, manager_module, batch_module, admin_token_module = _load_test_modules()
         manager = _build_manager(manager_module)
+        manager.pools["ssoBasic"].add(manager_module.TokenInfo(token="disable-400"))
+        manager.pools["ssoSuper"].add(manager_module.TokenInfo(token="disable-404"))
         responses = {
             "remove-401": manager_module.UpstreamException(
                 "unauthorized", details={"status": 401}
             ),
+            "disable-400": manager_module.UpstreamException(
+                "bad-request", details={"status": 400}
+            ),
             "keep-403": manager_module.UpstreamException(
                 "forbidden", details={"status": 403}
+            ),
+            "disable-404": manager_module.UpstreamException(
+                "not-found", details={"status": 404}
             ),
             "keep-500": manager_module.UpstreamException(
                 "server-error", details={"status": 500}
@@ -317,12 +378,12 @@ class AdminTokenCleanupAsyncApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(task)
         self.assertEqual(response["status"], "success")
-        self.assertEqual(response["total"], 4)
+        self.assertEqual(response["total"], 6)
         self.assertIsNotNone(final_event)
         assert final_event is not None
         self.assertEqual(final_event["type"], "done")
-        self.assertEqual(final_event["processed"], 4)
-        self.assertEqual(final_event["ok"], 4)
+        self.assertEqual(final_event["processed"], 6)
+        self.assertEqual(final_event["ok"], 6)
         self.assertEqual(final_event["fail"], 0)
 
         result = final_event["result"]
@@ -330,12 +391,15 @@ class AdminTokenCleanupAsyncApiTests(unittest.IsolatedAsyncioTestCase):
         by_token = result["results"]
         self.assertEqual(result["summary"]["removed"], 1)
         self.assertEqual(result["summary"]["deleted"], 1)
-        self.assertEqual(result["summary"]["disabled"], 1)
+        self.assertEqual(result["summary"]["disabled"], 3)
         self.assertEqual(result["summary"]["kept"], 2)
         self.assertTrue(by_token["remove-401"]["removed"])
+        self.assertTrue(by_token["disable-400"]["disabled"])
         self.assertFalse(by_token["keep-403"]["removed"])
         self.assertTrue(by_token["keep-403"]["disabled"])
+        self.assertTrue(by_token["disable-404"]["disabled"])
         self.assertFalse(by_token["keep-500"]["removed"])
+        self.assertNotIn("already-disabled", by_token)
 
 
 if __name__ == "__main__":

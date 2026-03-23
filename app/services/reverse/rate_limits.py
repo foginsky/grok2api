@@ -21,7 +21,7 @@ class RateLimitsReverse:
     """/rest/rate-limits reverse interface."""
 
     @staticmethod
-    async def request(session: Any, token: str) -> Any:
+    async def request(session: Any, token: str, disable_retry: bool = False) -> Any:
         """Fetch rate limits from Grok.
 
         Args:
@@ -89,6 +89,9 @@ class RateLimitsReverse:
                     )
 
                 return response
+
+            if disable_retry:
+                return await _do_request()
 
             return await retry_on_status(_do_request)
 

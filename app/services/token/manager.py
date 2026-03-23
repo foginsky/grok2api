@@ -610,7 +610,12 @@ class TokenManager:
     ) -> Dict[str, Any]:
         """主动探测所有 Token，仅删除当前探测为原始 401 的 token。"""
         usage_service = UsageService()
-        total = sum(pool.count() for pool in self.pools.values())
+        total = sum(
+            1
+            for pool in self.pools.values()
+            for token in pool.list()
+            if token.status == TokenStatus.ACTIVE
+        )
         processed = 0
         removed = 0
         disabled = 0
@@ -620,6 +625,8 @@ class TokenManager:
 
         for pool_name, pool in self.pools.items():
             for token_info in pool.list():
+                if token_info.status != TokenStatus.ACTIVE:
+                    continue
                 if should_cancel and should_cancel():
                     cancelled = True
                     break
@@ -635,7 +642,7 @@ class TokenManager:
                 }
 
                 try:
-                    await usage_service.get(token)
+                    await usage_service.get(token, disable_retry=True)
                 except UpstreamException as exc:
                     status = _upstream_details_status(exc)
                     item["probe_status"] = status
@@ -645,10 +652,10 @@ class TokenManager:
                         item["removed"] = True
                         item["reason"] = "removed_probe_401"
                         pending_removals.append((pool_name, token_info.token, item))
-                    elif status == 403:
+                    elif status in {400, 403, 404}:
                         token_info.status = TokenStatus.DISABLED
                         item["disabled"] = True
-                        item["reason"] = "disabled_probe_403"
+                        item["reason"] = f"disabled_probe_{status}"
                         disabled += 1
                     else:
                         item["reason"] = "kept_probe_error"

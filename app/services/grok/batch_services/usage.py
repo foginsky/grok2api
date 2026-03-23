@@ -28,7 +28,7 @@ def _get_usage_semaphore() -> asyncio.Semaphore:
 class UsageService:
     """用量查询服务"""
 
-    async def get(self, token: str) -> Dict:
+    async def get(self, token: str, disable_retry: bool = False) -> Dict:
         """
         获取速率限制信息
 
@@ -44,7 +44,9 @@ class UsageService:
         async with _get_usage_semaphore():
             try:
                 async with ResettableSession() as session:
-                    response = await RateLimitsReverse.request(session, token)
+                    response = await RateLimitsReverse.request(
+                        session, token, disable_retry=disable_retry
+                    )
                 data = response.json()
                 remaining = data.get("remainingTokens")
                 if remaining is None:
@@ -60,7 +62,6 @@ class UsageService:
                 # 最后一次失败已经被记录
                 raise
 
-
     @staticmethod
     async def batch(
         tokens: List[str],
@@ -70,6 +71,7 @@ class UsageService:
         should_cancel: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         batch_size = get_config("usage.batch_size")
+
         async def _refresh_one(t: str):
             return await mgr.sync_usage(t, consume_on_fail=False, is_usage=False)
 

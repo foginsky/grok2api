@@ -11,6 +11,7 @@ from app.core.storage import get_storage
 from app.services.grok.batch_services.usage import UsageService
 from app.services.grok.batch_services.nsfw import NSFWService
 from app.services.token.manager import get_token_manager
+from app.services.token.models import TokenStatus
 
 router = APIRouter()
 
@@ -233,7 +234,12 @@ async def cleanup_invalid_tokens_async(data: dict):
     del data
 
     mgr = await get_token_manager()
-    total = sum(pool.count() for pool in mgr.pools.values())
+    total = sum(
+        1
+        for pool in mgr.pools.values()
+        for token in pool.list()
+        if token.status == TokenStatus.ACTIVE
+    )
 
     if total <= 0:
         raise HTTPException(status_code=400, detail="No tokens available")
