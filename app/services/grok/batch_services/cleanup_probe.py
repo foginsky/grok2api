@@ -3,8 +3,51 @@ from __future__ import annotations
 import importlib
 from typing import Any, Dict
 
+import orjson
+
 from app.core.config import get_config
 from app.core.exceptions import UpstreamException
+from app.core.logger import logger
+
+
+def _normalize_line(line: Any) -> str | None:
+    if line is None:
+        return None
+    if isinstance(line, (bytes, bytearray)):
+        text = line.decode("utf-8", errors="ignore")
+    else:
+        text = str(line)
+    text = text.strip()
+    if not text:
+        return None
+    if text.startswith("data:"):
+        text = text[5:].strip()
+    if text == "[DONE]":
+        return None
+    return text
+
+
+def _get_model_service():
+    return importlib.import_module("app.services.grok.services.model").ModelService
+
+
+def _get_session_cls():
+    return importlib.import_module(
+        "app.services.reverse.utils.session"
+    ).ResettableSession
+
+
+def _get_headers_builder():
+    return importlib.import_module("app.services.reverse.utils.headers").build_headers
+
+
+def _get_app_chat_helpers():
+    module = importlib.import_module("app.services.reverse.app_chat")
+    return module.AppChatReverse, module.CHAT_API, module._is_transient_network_error
+
+
+def _get_requests_error_cls():
+    return importlib.import_module("curl_cffi.requests.errors").RequestsError
 
 
 class CleanupProbeService:
@@ -16,22 +59,11 @@ class CleanupProbeService:
         probe_model: str,
         disable_retry: bool = True,
     ) -> Dict[str, Any]:
-        app_chat_module = importlib.import_module("app.services.reverse.app_chat")
-        model_module = importlib.import_module("app.services.grok.services.model")
-        session_module = importlib.import_module("app.services.reverse.utils.session")
-        headers_module = importlib.import_module("app.services.reverse.utils.headers")
-        logger = importlib.import_module("app.core.logger").logger
-        orjson = importlib.import_module("orjson")
-        requests_error = importlib.import_module(
-            "curl_cffi.requests.errors"
-        ).RequestsError
-
-        ModelService = model_module.ModelService
-        ResettableSession = session_module.ResettableSession
-        build_headers = headers_module.build_headers
-        AppChatReverse = app_chat_module.AppChatReverse
-        CHAT_API = app_chat_module.CHAT_API
-        is_transient = app_chat_module._is_transient_network_error
+        ModelService = _get_model_service()
+        ResettableSession = _get_session_cls()
+        build_headers = _get_headers_builder()
+        AppChatReverse, CHAT_API, is_transient_network_error = _get_app_chat_helpers()
+        RequestsError = _get_requests_error_cls()
 
         resolved_model_id = str(probe_model or "").strip() or "grok-3-mini"
         model_name, model_mode = ModelService.to_grok(resolved_model_id)
@@ -79,14 +111,22 @@ class CleanupProbeService:
                     proxies=proxies,
                     impersonate=browser,
                 )
-            except requests_error as exc:
-                status = 599 if is_transient(exc) else 502
+            except RequestsError as exc:
+                status = 599 if is_transient_network_error(exc) else 502
+                logger.error(
+                    f"Cleanup probe request failure: {status}",
+                    extra={"error_type": "UpstreamException"},
+                )
                 raise UpstreamException(
                     message=f"CleanupProbeService: Probe failed, {exc}",
                     details={"status": status, "error": str(exc)},
                     status_code=status,
                 ) from exc
             except Exception as exc:
+                logger.error(
+                    "Cleanup probe request failure: 502",
+                    extra={"error_type": "UpstreamException"},
+                )
                 raise UpstreamException(
                     message=f"CleanupProbeService: Probe failed, {exc}",
                     details={"status": 502, "error": str(exc)},
@@ -99,26 +139,83 @@ class CleanupProbeService:
                     content = await response.text()
                 except Exception:
                     pass
+                logger.error(
+                    f"Cleanup probe HTTP failure: {response.status_code}",
+                    extra={"error_type": "UpstreamException"},
+                )
                 raise UpstreamException(
                     message=f"CleanupProbeService: Probe failed, {response.status_code}",
                     details={"status": response.status_code, "body": content},
                     status_code=response.status_code,
                 )
 
+            stream_error_status = None
+            stream_error_body = None
+            saw_success_event = False
             try:
-                close_fn = getattr(response, "aclose", None)
-                if callable(close_fn):
-                    result = close_fn()
-                    if hasattr(result, "__await__"):
-                        await result
-                else:
-                    close_fn = getattr(response, "close", None)
+                async for raw_line in response.aiter_lines():
+                    line = _normalize_line(raw_line)
+                    if not line:
+                        continue
+                    try:
+                        data = orjson.loads(line)
+                    except orjson.JSONDecodeError:
+                        continue
+
+                    result = data.get("result") if isinstance(data, dict) else None
+                    if not isinstance(result, dict):
+                        continue
+
+                    error = result.get("error")
+                    if isinstance(error, dict):
+                        try:
+                            stream_error_status = int(error.get("status"))
+                        except (TypeError, ValueError):
+                            stream_error_status = 502
+                        stream_error_body = error
+                        break
+
+                    response_obj = result.get("response")
+                    if isinstance(response_obj, dict) and response_obj:
+                        saw_success_event = True
+                        break
+            finally:
+                try:
+                    close_fn = getattr(response, "aclose", None)
                     if callable(close_fn):
                         result = close_fn()
                         if hasattr(result, "__await__"):
                             await result
-            except Exception:
-                pass
+                    else:
+                        close_fn = getattr(response, "close", None)
+                        if callable(close_fn):
+                            result = close_fn()
+                            if hasattr(result, "__await__"):
+                                await result
+                except Exception:
+                    pass
+
+            if stream_error_status is not None:
+                logger.error(
+                    f"Cleanup probe stream failure: {stream_error_status}",
+                    extra={"error_type": "UpstreamException"},
+                )
+                raise UpstreamException(
+                    message=f"CleanupProbeService: Probe stream failed, {stream_error_status}",
+                    details={"status": stream_error_status, "body": stream_error_body},
+                    status_code=stream_error_status,
+                )
+
+            if not saw_success_event:
+                logger.error(
+                    "Cleanup probe stream ended without usable success event",
+                    extra={"error_type": "UpstreamException"},
+                )
+                raise UpstreamException(
+                    message="CleanupProbeService: Probe stream ended without usable event",
+                    details={"status": 502, "error": "empty_or_unusable_stream"},
+                    status_code=502,
+                )
 
             return {
                 "status": 200,

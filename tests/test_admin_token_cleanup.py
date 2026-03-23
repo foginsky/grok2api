@@ -122,6 +122,8 @@ def _install_dependency_stubs() -> None:
     if "orjson" not in sys.modules:
         orjson_module = types.ModuleType("orjson")
         setattr(orjson_module, "dumps", lambda value: json.dumps(value).encode("utf-8"))
+        setattr(orjson_module, "loads", lambda value: json.loads(value))
+        setattr(orjson_module, "JSONDecodeError", json.JSONDecodeError)
         sys.modules["orjson"] = orjson_module
 
     if "curl_cffi.requests.errors" not in sys.modules:
@@ -212,6 +214,110 @@ class _FakeCleanupProbeService:
         if isinstance(result, Exception):
             raise result
         return result
+
+
+class _FakeProbeResponse:
+    def __init__(self, status_code=200, lines=None, body=""):
+        self.status_code = status_code
+        self._lines = list(lines or [])
+        self._body = body
+        self.closed = False
+
+    async def text(self):
+        return self._body
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+    async def aclose(self):
+        self.closed = True
+
+
+class CleanupProbeServiceStreamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_probe_raises_when_first_stream_event_contains_error(self):
+        cleanup_probe_module = _load_module(
+            "app.services.grok.batch_services.cleanup_probe",
+            PROJECT_ROOT / "app/services/grok/batch_services/cleanup_probe.py",
+        )
+
+        error_line = json.dumps(
+            {
+                "result": {
+                    "error": {
+                        "status": 404,
+                        "message": "model route missing",
+                    }
+                }
+            }
+        )
+
+        response = _FakeProbeResponse(200, [f"data: {error_line}"])
+
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def post(self, *_args, **_kwargs):
+                return response
+
+        with (
+            patch.object(
+                cleanup_probe_module,
+                "_get_session_cls",
+                lambda: (lambda **_kwargs: _FakeSession()),
+            ),
+            patch.object(
+                cleanup_probe_module,
+                "_get_headers_builder",
+                lambda: (
+                    lambda cookie_token, **_kwargs: {"Cookie": f"sso={cookie_token}"}
+                ),
+            ),
+            patch.object(
+                cleanup_probe_module,
+                "_get_model_service",
+                lambda: types.SimpleNamespace(
+                    to_grok=lambda _model_id: (
+                        "grok-4-1-thinking-1129",
+                        "MODEL_MODE_FAST",
+                    )
+                ),
+            ),
+            patch.object(
+                cleanup_probe_module,
+                "_get_app_chat_helpers",
+                lambda: (
+                    types.SimpleNamespace(
+                        build_payload=lambda **_kwargs: {"message": "hi"}
+                    ),
+                    "https://grok.com/rest/app-chat/conversations/new",
+                    lambda exc: False,
+                ),
+            ),
+            patch.object(
+                cleanup_probe_module,
+                "logger",
+                types.SimpleNamespace(
+                    info=lambda *a, **k: None,
+                    error=lambda *a, **k: None,
+                    warning=lambda *a, **k: None,
+                ),
+            ),
+            patch.object(
+                cleanup_probe_module, "_get_requests_error_cls", lambda: Exception
+            ),
+        ):
+            with self.assertRaises(cleanup_probe_module.UpstreamException) as ctx:
+                await cleanup_probe_module.CleanupProbeService().probe(
+                    "token-1", "grok-4.1-fast", disable_retry=True
+                )
+
+        self.assertEqual(ctx.exception.details["status"], 404)
+        self.assertTrue(response.closed)
 
 
 def _build_manager(manager_module):
