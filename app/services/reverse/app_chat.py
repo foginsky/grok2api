@@ -42,6 +42,38 @@ class AppChatReverse:
     """/rest/app-chat/conversations/new reverse interface."""
 
     @staticmethod
+    async def _read_error_body(response: Any) -> str:
+        """Best-effort read for non-200 upstream responses."""
+        readers = ("text", "atext", "read", "aread")
+        for attr_name in readers:
+            attr = getattr(response, attr_name, None)
+            if attr is None:
+                continue
+            try:
+                value = attr() if callable(attr) else attr
+                if inspect.isawaitable(value):
+                    value = await value
+                if value is None:
+                    continue
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8", errors="ignore")
+                value = str(value)
+                if value:
+                    return value
+            except Exception:
+                continue
+
+        content = getattr(response, "content", None)
+        if content:
+            try:
+                if isinstance(content, bytes):
+                    return content.decode("utf-8", errors="ignore")
+                return str(content)
+            except Exception:
+                pass
+        return ""
+
+    @staticmethod
     def build_payload(
         message: str,
         model: str,
@@ -50,6 +82,7 @@ class AppChatReverse:
         tool_overrides: Optional[Dict[str, Any]] = None,
         model_config_override: Optional[Dict[str, Any]] = None,
         image_generation_count: int | None = None,
+        request_overrides: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """Build chat payload for Grok app-chat API."""
 
@@ -99,6 +132,11 @@ class AppChatReverse:
         if model_config_override:
             payload["responseMetadata"]["modelConfigOverride"] = model_config_override
 
+        if request_overrides:
+            payload.update(
+                {k: v for k, v in request_overrides.items() if v is not None}
+            )
+
         logger.debug(f"AppChatReverse payload: {payload}")
         return payload
 
@@ -114,6 +152,7 @@ class AppChatReverse:
         tool_overrides: Optional[Dict[str, Any]] = None,
         model_config_override: Optional[Dict[str, Any]] = None,
         image_generation_count: int | None = None,
+        request_overrides: Dict[str, Any] | None = None,
     ) -> Any:
         """Send app chat request to Grok.
 
@@ -152,6 +191,7 @@ class AppChatReverse:
                 tool_overrides=tool_overrides,
                 model_config_override=model_config_override,
                 image_generation_count=image_generation_count,
+                request_overrides=request_overrides,
             )
             logger.info(
                 "AppChat request prepared: "
@@ -196,19 +236,16 @@ class AppChatReverse:
                     raise
 
                 if response.status_code != 200:
-                    # Get response content
-                    content = ""
-                    try:
-                        content = await response.text()
-                    except Exception:
-                        pass
+                    content = await AppChatReverse._read_error_body(response)
+                    content_type = str(response.headers.get("content-type", ""))
 
                     logger.error(
-                        f"AppChatReverse: Chat failed, {response.status_code}",
+                        "AppChatReverse: Chat failed, %s, content_type=%s, body=%s",
+                        response.status_code,
+                        content_type,
+                        content[:500],
                         extra={"error_type": "UpstreamException"},
                     )
-                    logger.error(f"Response Headers: {response.headers}")
-                    logger.error(f"Response Body: {content}")
                     raise UpstreamException(
                         message=f"AppChatReverse: Chat failed, {response.status_code}",
                         details={"status": response.status_code, "body": content},
