@@ -124,6 +124,11 @@
     - `app/api/v1/chat.py`：支持从 markdown 文本提取并去重图片 URL
     - `app/services/reverse/app_chat.py`：非 200 响应 body 读取与日志增强
 
+- `674add4a2049933a0e711425836007e52da88cc1` (partial)
+  - `feat: implement function to extract last user prompt and associated image URLs from messages`
+  - 实际吸收内容：
+    - `app/services/grok/services/video.py`：只使用最后一个 user turn 提取 prompt 和关联图片 URL，避免历史消息串扰当前视频输入
+
 ### Explicitly skipped in this review window
 
 - xianyu `83ae47d...`
@@ -135,8 +140,9 @@
 - chenyme `33caf94...`
   - 健康检查日志配置，当前价值低于同步成本
 
-- chenyme `674add4...`
-  - 图片提取辅助逻辑，当前已被 `549c3dc` 的主路径收益覆盖，暂不单独吸收
+- chenyme `936efd78039df1a954e3d153de4ea6bb7dcc52e7` / `26f6d41df725394fa1548e358226195d714f9a7c`
+  - `get_tokens` import 修复
+  - 原因：经复核，本地 `app/api/v1/admin_api/token.py` 当前没有 `get_config / consumption_mode` 调用点，该修复对本地不适用
 
 ## How to use this next time
 
