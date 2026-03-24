@@ -114,6 +114,54 @@ def _normalize_assets_url(value: str) -> str:
     return f"https://assets.grok.com/{raw}"
 
 
+def _extract_last_user_prompt_and_images(
+    messages: list[dict[str, Any]],
+) -> tuple[str, list[str]]:
+    """只使用最后一个 user turn，避免图片占位和前文错位。"""
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role") or "user"
+        if role != "user":
+            continue
+
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            return content.strip(), []
+        if isinstance(content, dict):
+            content = [content]
+        if not isinstance(content, list):
+            return "", []
+
+        prompt_parts: list[str] = []
+        image_urls: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+
+            item_type = item.get("type")
+            if item_type == "text":
+                text = item.get("text", "")
+                if isinstance(text, str) and text.strip():
+                    prompt_parts.append(text.strip())
+            elif item_type == "image_url":
+                image_data = item.get("image_url", {})
+                url = ""
+                if isinstance(image_data, dict):
+                    url = image_data.get("url", "")
+                elif isinstance(image_data, str):
+                    url = image_data
+                if isinstance(url, str) and url.strip():
+                    image_urls.append(url.strip())
+
+        prompt = "\n".join(prompt_parts).strip()
+        if not prompt and image_urls:
+            prompt = "Refer to the following content:"
+        return prompt, image_urls
+
+    return "", []
+
+
 def _classify_video_error(exc: Exception) -> tuple[str, str, int]:
     """将底层异常归一化为用户可读错误。"""
     text = str(exc or "").lower()
@@ -1065,10 +1113,8 @@ class VideoService:
             show_think = reasoning_effort != "none"
         is_stream = stream if stream is not None else get_config("app.stream")
 
-        # Extract content.
-        from app.services.grok.services.chat import MessageExtractor
-
-        prompt, file_attachments, image_attachments = MessageExtractor.extract(messages)
+        # Extract content from the last user turn only.
+        prompt, image_attachments = _extract_last_user_prompt_and_images(messages)
         parent_post_id = (parent_post_id or "").strip() or None
         source_image_url = (source_image_url or "").strip()
         reference_items = [
