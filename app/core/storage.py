@@ -13,6 +13,7 @@ import abc
 import os
 import asyncio
 import hashlib
+import re
 import time
 import tomllib
 from typing import Any, Dict, Optional
@@ -46,6 +47,46 @@ def json_dumps(obj: Any) -> str:
 
 def json_loads(obj: str | bytes) -> Any:
     return orjson.loads(obj)
+
+
+_TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_escape_string(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+
+
+def _toml_format_key(key: Any) -> str:
+    text = str(key)
+    if _TOML_BARE_KEY_RE.fullmatch(text):
+        return text
+    return f'"{_toml_escape_string(text)}"'
+
+
+def _toml_format_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, str):
+        return f'"{_toml_escape_string(value)}"'
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_format_value(item) for item in value) + "]"
+    if isinstance(value, dict):
+        parts = [
+            f"{_toml_format_key(key)} = {_toml_format_value(item)}"
+            for key, item in value.items()
+        ]
+        return "{ " + ", ".join(parts) + " }"
+    if value is None:
+        return '""'
+    return f'"{_toml_escape_string(str(value))}"'
 
 
 def has_token_entries(data: Any) -> bool:
@@ -194,20 +235,9 @@ class LocalStorage(BaseStorage):
             for section, items in data.items():
                 if not isinstance(items, dict):
                     continue
-                lines.append(f"[{section}]")
+                lines.append(f"[{_toml_format_key(section)}]")
                 for key, val in items.items():
-                    if isinstance(val, bool):
-                        val_str = "true" if val else "false"
-                    elif isinstance(val, str):
-                        escaped = val.replace('"', '\\"')
-                        val_str = f'"{escaped}"'
-                    elif isinstance(val, (int, float)):
-                        val_str = str(val)
-                    elif isinstance(val, (list, dict)):
-                        val_str = json_dumps(val)
-                    else:
-                        val_str = f'"{str(val)}"'
-                    lines.append(f"{key} = {val_str}")
+                    lines.append(f"{_toml_format_key(key)} = {_toml_format_value(val)}")
                 lines.append("")
 
             content = "\n".join(lines)
