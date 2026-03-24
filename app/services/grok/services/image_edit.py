@@ -4,8 +4,9 @@ Grok image edit service.
 
 import asyncio
 import re
+import time
 from dataclasses import dataclass
-from typing import AsyncGenerator, AsyncIterable, List, Union, Any, Callable
+from typing import AsyncGenerator, AsyncIterable, Dict, List, Union, Any, Callable
 
 import orjson
 from curl_cffi.requests.errors import RequestsError
@@ -31,6 +32,9 @@ from app.services.grok.services.chat import GrokChatService
 from app.services.grok.services.video import VideoService
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import EffortType
+
+_EDIT_UPSTREAM_MODEL = "grok-4"
+_EDIT_UPSTREAM_MODE = "MODEL_MODE_AUTO"
 
 
 @dataclass
@@ -103,6 +107,10 @@ def _normalize_fallback_image_url(url: str) -> str:
 class ImageEditService:
     """Image edit orchestration service."""
 
+    @staticmethod
+    def _build_request_overrides(n: int) -> Dict[str, Any]:
+        return {"imageGenerationCount": max(1, int(n or 1))}
+
     async def _emit_progress(
         self,
         progress_cb: Callable[[str, dict], Any] | None,
@@ -170,56 +178,27 @@ class ImageEditService:
                     16,
                     "正在上传输入图片",
                 )
-                image_urls = await self._upload_images(images, current_token)
+                file_attachments = await self._upload_images(images, current_token)
                 await self._emit_progress(
                     progress_cb,
                     "upload_done",
                     30,
-                    f"图片上传完成，共 {len(image_urls)} 张",
-                    count=len(image_urls),
+                    f"图片上传完成，共 {len(file_attachments)} 张",
+                    count=len(file_attachments),
                 )
-                await self._emit_progress(
-                    progress_cb,
-                    "pre_create_start",
-                    36,
-                    "正在创建媒体帖子",
-                )
-                parent_post_id = await self._get_parent_post_id(
-                    current_token, image_urls
-                )
-                await self._emit_progress(
-                    progress_cb,
-                    "pre_create_done",
-                    42,
-                    "媒体帖子创建完成",
-                    parent_post_id=parent_post_id or "",
-                )
-
-                model_config_override = {
-                    "modelMap": {
-                        "imageEditModel": "imagine",
-                        "imageEditModelConfig": {
-                            "imageReferences": image_urls,
-                        },
-                    }
-                }
-                if parent_post_id:
-                    model_config_override["modelMap"]["imageEditModelConfig"][
-                        "parentPostId"
-                    ] = parent_post_id
-
-                tool_overrides = {"imageGen": True}
+                tool_overrides: Dict[str, Any] | None = None
+                request_overrides = self._build_request_overrides(n)
 
                 if stream:
                     response = await GrokChatService().chat(
                         token=current_token,
                         message=prompt,
-                        model=model_info.grok_model,
-                        mode=None,
+                        model=_EDIT_UPSTREAM_MODEL,
+                        mode=_EDIT_UPSTREAM_MODE,
                         stream=True,
+                        file_attachments=file_attachments,
                         tool_overrides=tool_overrides,
-                        model_config_override=model_config_override,
-                        image_generation_count=1,
+                        request_overrides=request_overrides,
                     )
                     processor = ImageStreamProcessor(
                         model_info.model_id,
@@ -242,15 +221,14 @@ class ImageEditService:
                     "chat_request_start",
                     48,
                     "已提交编辑请求",
-                    parent_post_id=parent_post_id or "",
                 )
                 images_out = await self._collect_images(
                     token=current_token,
                     prompt=prompt,
-                    model_info=model_info,
                     response_format=response_format,
+                    file_attachments=file_attachments,
                     tool_overrides=tool_overrides,
-                    model_config_override=model_config_override,
+                    request_overrides=request_overrides,
                     return_all_images=return_all_images,
                     progress_cb=progress_cb,
                 )
@@ -433,10 +411,10 @@ class ImageEditService:
                 images_out = await self._collect_images(
                     token=current_token,
                     prompt=prompt,
-                    model_info=model_info,
                     response_format=response_format,
+                    file_attachments=[],
                     tool_overrides=tool_overrides,
-                    model_config_override=model_config_override,
+                    request_overrides={"imageGenerationCount": 1},
                     return_all_images=return_all_images,
                     progress_cb=progress_cb,
                 )
@@ -490,18 +468,13 @@ class ImageEditService:
         )
 
     async def _upload_images(self, images: List[str], token: str) -> List[str]:
-        image_urls: List[str] = []
+        file_attachments: List[str] = []
         upload_service = UploadService()
         try:
             for image in images:
-                _, file_uri = await upload_service.upload_file(image, token)
-                if file_uri:
-                    if file_uri.startswith("http"):
-                        image_urls.append(file_uri)
-                    else:
-                        image_urls.append(
-                            f"https://assets.grok.com/{file_uri.lstrip('/')}"
-                        )
+                file_id, _ = await upload_service.upload_file(image, token)
+                if file_id:
+                    file_attachments.append(file_id)
         except Exception as e:
             if _is_upload_rejected_error(e):
                 raise AppException(
@@ -526,50 +499,24 @@ class ImageEditService:
         finally:
             await upload_service.close()
 
-        if not image_urls:
+        if not file_attachments:
             raise AppException(
                 message="Image upload failed",
                 error_type=ErrorType.SERVER.value,
                 code="upload_failed",
             )
 
-        return image_urls
-
-    async def _get_parent_post_id(self, token: str, image_urls: List[str]) -> str:
-        parent_post_id = None
-        try:
-            media_service = VideoService()
-            parent_post_id = await media_service.create_image_post(token, image_urls[0])
-            logger.debug(f"Parent post ID: {parent_post_id}")
-        except Exception as e:
-            logger.warning(f"Create image post failed: {e}")
-
-        if parent_post_id:
-            return parent_post_id
-
-        for url in image_urls:
-            match = re.search(r"/generated/([a-f0-9-]+)/", url)
-            if match:
-                parent_post_id = match.group(1)
-                logger.debug(f"Parent post ID: {parent_post_id}")
-                break
-            match = re.search(r"/users/[^/]+/([a-f0-9-]+)/content", url)
-            if match:
-                parent_post_id = match.group(1)
-                logger.debug(f"Parent post ID: {parent_post_id}")
-                break
-
-        return parent_post_id or ""
+        return file_attachments
 
     async def _collect_images(
         self,
         *,
         token: str,
         prompt: str,
-        model_info: Any,
         response_format: str,
+        file_attachments: List[str],
         tool_overrides: dict,
-        model_config_override: dict,
+        request_overrides: dict,
         return_all_images: bool = False,
         progress_cb: Callable[[str, dict], Any] | None = None,
     ) -> List[str]:
@@ -577,15 +524,15 @@ class ImageEditService:
             response = await GrokChatService().chat(
                 token=token,
                 message=prompt,
-                model=model_info.grok_model,
-                mode=None,
+                model=_EDIT_UPSTREAM_MODEL,
+                mode=_EDIT_UPSTREAM_MODE,
                 stream=True,
+                file_attachments=file_attachments,
                 tool_overrides=tool_overrides,
-                model_config_override=model_config_override,
-                image_generation_count=1,
+                request_overrides=request_overrides,
             )
             processor = ImageCollectProcessor(
-                model_info.model_id,
+                "grok-imagine-1.0-edit",
                 token,
                 response_format=response_format,
                 progress_cb=progress_cb,
@@ -613,6 +560,7 @@ class ImageStreamProcessor(BaseProcessor):
         self.partial_index = 0
         self.n = n
         self.target_index = 0 if n == 1 else None
+        self._image_ids: Dict[int, str] = {}
         self.response_format = response_format
         if response_format == "url":
             self.response_field = "url"
@@ -620,6 +568,13 @@ class ImageStreamProcessor(BaseProcessor):
             self.response_field = "base64"
         else:
             self.response_field = "b64_json"
+
+    def _get_image_id(self, image_index: int) -> str:
+        if image_index not in self._image_ids:
+            self._image_ids[image_index] = (
+                f"app-chat-{int(time.time() * 1000)}-{image_index}"
+            )
+        return self._image_ids[image_index]
 
     def _sse(self, event: str, data: dict) -> str:
         """Build SSE response."""
@@ -654,6 +609,7 @@ class ImageStreamProcessor(BaseProcessor):
 
                     out_index = 0 if self.n == 1 else image_index
 
+                    image_id = self._get_image_id(image_index)
                     yield self._sse(
                         "image_generation.partial_image",
                         {
@@ -661,6 +617,7 @@ class ImageStreamProcessor(BaseProcessor):
                             self.response_field: "",
                             "index": out_index,
                             "progress": progress,
+                            "image_id": image_id,
                         },
                     )
                     continue
@@ -715,6 +672,8 @@ class ImageStreamProcessor(BaseProcessor):
                         "type": "image_generation.completed",
                         self.response_field: b64,
                         "index": out_index,
+                        "image_id": self._get_image_id(out_index),
+                        "stage": "final",
                         "usage": {
                             "total_tokens": 0,
                             "input_tokens": 0,

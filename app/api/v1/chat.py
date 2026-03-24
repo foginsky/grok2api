@@ -4,6 +4,7 @@ Chat Completions API 路由
 
 import asyncio
 import inspect
+import re
 from typing import Any, Dict, List, Optional, Union
 import base64
 import binascii
@@ -119,6 +120,7 @@ def _default_image_config() -> ImageConfig:
 
 VALID_ROLES = {"developer", "system", "user", "assistant", "tool"}
 USER_CONTENT_TYPES = {"text", "image_url", "input_audio", "file"}
+MARKDOWN_IMAGE_RE = r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)"
 ALLOWED_IMAGE_SIZES = {
     "1280x720",
     "720x1280",
@@ -194,11 +196,20 @@ def _extract_prompt_images(messages: List[MessageItem]) -> tuple[str, List[str]]
     last_text = ""
     image_urls: List[str] = []
 
+    def _collect_markdown_images(text: str):
+        if not isinstance(text, str) or not text:
+            return
+        for match in re.finditer(MARKDOWN_IMAGE_RE, text):
+            url = (match.group(1) or "").strip()
+            if url:
+                image_urls.append(url)
+
     for msg in messages:
         role = msg.role or "user"
         content = msg.content
         if isinstance(content, str):
             text = content.strip()
+            _collect_markdown_images(text)
             if text:
                 last_text = text
             continue
@@ -211,6 +222,7 @@ def _extract_prompt_images(messages: List[MessageItem]) -> tuple[str, List[str]]
             if block_type == "text":
                 text = block.get("text", "")
                 if isinstance(text, str) and text.strip():
+                    _collect_markdown_images(text)
                     last_text = text.strip()
             elif block_type == "image_url" and role == "user":
                 image = block.get("image_url") or {}
@@ -218,7 +230,14 @@ def _extract_prompt_images(messages: List[MessageItem]) -> tuple[str, List[str]]
                 if isinstance(url, str) and url.strip():
                     image_urls.append(url.strip())
 
-    return last_text, image_urls
+    deduped_urls: List[str] = []
+    seen = set()
+    for url in image_urls:
+        if url not in seen:
+            seen.add(url)
+            deduped_urls.append(url)
+
+    return last_text, deduped_urls
 
 
 def _ensure_video_default_prompt(messages: List[MessageItem]) -> None:
