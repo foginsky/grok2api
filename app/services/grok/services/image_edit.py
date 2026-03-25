@@ -613,13 +613,19 @@ class ImageStreamProcessor(BaseProcessor):
     """HTTP image stream processor."""
 
     def __init__(
-        self, model: str, token: str = "", n: int = 1, response_format: str = "b64_json"
+        self,
+        model: str,
+        token: str = "",
+        n: int = 1,
+        response_format: str = "b64_json",
+        chat_format: bool = True,
     ):
         super().__init__(model, token)
         self.partial_index = 0
         self.n = n
         self.target_index = 0 if n == 1 else None
         self._image_ids: Dict[int, str] = {}
+        self.chat_format = chat_format
         self.response_format = response_format
         if response_format == "url":
             self.response_field = "url"
