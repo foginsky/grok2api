@@ -104,6 +104,65 @@ def _normalize_fallback_image_url(url: str) -> str:
     return f"https://assets.grok.com/{raw}"
 
 
+def _append_unique_urls(target: List[str], values: List[str]) -> None:
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in target:
+            target.append(text)
+
+
+def _extract_urls_from_card_json(card_data: Any) -> List[str]:
+    urls: List[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                key_lower = str(key or "").lower()
+                if (
+                    key_lower in {"imageurl", "original", "url", "sourceurl"}
+                    and isinstance(value, str)
+                    and value.strip().startswith(("http://", "https://"))
+                ):
+                    _append_unique_urls(urls, [value.strip()])
+                    continue
+                walk(value)
+            return
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(card_data)
+    return urls
+
+
+def _extract_card_attachment_urls(resp: Dict[str, Any]) -> List[str]:
+    urls: List[str] = []
+
+    card = resp.get("cardAttachment")
+    if isinstance(card, dict):
+        raw_json = card.get("jsonData")
+        if isinstance(raw_json, str) and raw_json.strip():
+            try:
+                card_data = orjson.loads(raw_json)
+            except orjson.JSONDecodeError:
+                card_data = None
+            if card_data is not None:
+                _append_unique_urls(urls, _extract_urls_from_card_json(card_data))
+
+    model_response = resp.get("modelResponse")
+    if isinstance(model_response, dict):
+        for raw in model_response.get("cardAttachmentsJson") or []:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            try:
+                card_data = orjson.loads(raw)
+            except orjson.JSONDecodeError:
+                continue
+            _append_unique_urls(urls, _extract_urls_from_card_json(card_data))
+
+    return urls
+
+
 class ImageEditService:
     """Image edit orchestration service."""
 
@@ -622,40 +681,43 @@ class ImageStreamProcessor(BaseProcessor):
                     )
                     continue
 
-                # modelResponse
+                extracted_urls: List[str] = []
                 if mr := resp.get("modelResponse"):
-                    if urls := _collect_images(mr):
-                        for url in urls:
-                            if self.response_format == "url":
-                                try:
-                                    processed = await self.process_url(url, "image")
-                                except Exception as e:
-                                    logger.warning(
-                                        "Image stream URL resolve failed, fallback to raw URL: "
-                                        f"error={e}"
-                                    )
-                                    processed = _normalize_fallback_image_url(url)
-                                if processed:
-                                    final_images.append(processed)
-                                continue
+                    _append_unique_urls(extracted_urls, _collect_images(mr))
+                _append_unique_urls(extracted_urls, _extract_card_attachment_urls(resp))
+
+                if extracted_urls:
+                    for url in extracted_urls:
+                        if self.response_format == "url":
                             try:
-                                dl_service = self._get_dl()
-                                base64_data = await dl_service.parse_b64(
-                                    url, self.token, "image"
-                                )
-                                if base64_data:
-                                    if "," in base64_data:
-                                        b64 = base64_data.split(",", 1)[1]
-                                    else:
-                                        b64 = base64_data
-                                    final_images.append(b64)
+                                processed = await self.process_url(url, "image")
                             except Exception as e:
                                 logger.warning(
-                                    f"Failed to convert image to base64, falling back to URL: {e}"
+                                    "Image stream URL resolve failed, fallback to raw URL: "
+                                    f"error={e}"
                                 )
-                                processed = await self.process_url(url, "image")
-                                if processed:
-                                    final_images.append(processed)
+                                processed = _normalize_fallback_image_url(url)
+                            if processed:
+                                final_images.append(processed)
+                            continue
+                        try:
+                            dl_service = self._get_dl()
+                            base64_data = await dl_service.parse_b64(
+                                url, self.token, "image"
+                            )
+                            if base64_data:
+                                if "," in base64_data:
+                                    b64 = base64_data.split(",", 1)[1]
+                                else:
+                                    b64 = base64_data
+                                final_images.append(b64)
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to convert image to base64, falling back to URL: {e}"
+                            )
+                            processed = await self.process_url(url, "image")
+                            if processed:
+                                final_images.append(processed)
                     continue
 
             for index, b64 in enumerate(final_images):
@@ -777,60 +839,64 @@ class ImageCollectProcessor(BaseProcessor):
                         "模型连接成功，正在生成图片",
                     )
 
+                extracted_urls: List[str] = []
                 if mr := resp.get("modelResponse"):
-                    if urls := _collect_images(mr):
-                        for url in urls:
-                            if self.response_format == "url":
-                                try:
-                                    processed = await self.process_url(url, "image")
-                                except Exception as e:
-                                    logger.warning(
-                                        "Image collect URL resolve failed, fallback to raw URL: "
-                                        f"error={e}"
-                                    )
-                                    processed = _normalize_fallback_image_url(url)
-                                if processed:
-                                    images.append(processed)
-                                    progress = min(90, 64 + len(images) * 12)
-                                    await self._emit_progress(
-                                        "image_downloaded",
-                                        progress,
-                                        f"已下载第 {len(images)} 张图片",
-                                        count=len(images),
-                                    )
-                                continue
+                    _append_unique_urls(extracted_urls, _collect_images(mr))
+                _append_unique_urls(extracted_urls, _extract_card_attachment_urls(resp))
+
+                if extracted_urls:
+                    for url in extracted_urls:
+                        if self.response_format == "url":
                             try:
-                                dl_service = self._get_dl()
-                                base64_data = await dl_service.parse_b64(
-                                    url, self.token, "image"
-                                )
-                                if base64_data:
-                                    if "," in base64_data:
-                                        b64 = base64_data.split(",", 1)[1]
-                                    else:
-                                        b64 = base64_data
-                                    images.append(b64)
-                                    progress = min(90, 64 + len(images) * 12)
-                                    await self._emit_progress(
-                                        "image_downloaded",
-                                        progress,
-                                        f"已下载第 {len(images)} 张图片",
-                                        count=len(images),
-                                    )
+                                processed = await self.process_url(url, "image")
                             except Exception as e:
                                 logger.warning(
-                                    f"Failed to convert image to base64, falling back to URL: {e}"
+                                    "Image collect URL resolve failed, fallback to raw URL: "
+                                    f"error={e}"
                                 )
-                                processed = await self.process_url(url, "image")
-                                if processed:
-                                    images.append(processed)
-                                    progress = min(90, 64 + len(images) * 12)
-                                    await self._emit_progress(
-                                        "image_downloaded",
-                                        progress,
-                                        f"已下载第 {len(images)} 张图片",
-                                        count=len(images),
-                                    )
+                                processed = _normalize_fallback_image_url(url)
+                            if processed:
+                                images.append(processed)
+                                progress = min(90, 64 + len(images) * 12)
+                                await self._emit_progress(
+                                    "image_downloaded",
+                                    progress,
+                                    f"已下载第 {len(images)} 张图片",
+                                    count=len(images),
+                                )
+                            continue
+                        try:
+                            dl_service = self._get_dl()
+                            base64_data = await dl_service.parse_b64(
+                                url, self.token, "image"
+                            )
+                            if base64_data:
+                                if "," in base64_data:
+                                    b64 = base64_data.split(",", 1)[1]
+                                else:
+                                    b64 = base64_data
+                                images.append(b64)
+                                progress = min(90, 64 + len(images) * 12)
+                                await self._emit_progress(
+                                    "image_downloaded",
+                                    progress,
+                                    f"已下载第 {len(images)} 张图片",
+                                    count=len(images),
+                                )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to convert image to base64, falling back to URL: {e}"
+                            )
+                            processed = await self.process_url(url, "image")
+                            if processed:
+                                images.append(processed)
+                                progress = min(90, 64 + len(images) * 12)
+                                await self._emit_progress(
+                                    "image_downloaded",
+                                    progress,
+                                    f"已下载第 {len(images)} 张图片",
+                                    count=len(images),
+                                )
 
         except asyncio.CancelledError:
             logger.debug("Image collect cancelled by client")
