@@ -3,6 +3,7 @@ Grok image edit service.
 """
 
 import asyncio
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -623,7 +624,7 @@ class ImageStreamProcessor(BaseProcessor):
         super().__init__(model, token)
         self.partial_index = 0
         self.n = n
-        self.target_index = 0 if n == 1 else None
+        self.target_index = random.randint(0, 1) if n == 1 else None
         self._image_ids: Dict[int, str] = {}
         self.chat_format = chat_format
         self.response_format = response_format
@@ -739,6 +740,7 @@ class ImageStreamProcessor(BaseProcessor):
                     {
                         "type": "image_generation.completed",
                         self.response_field: b64,
+                        "payload": {self.response_field: b64},
                         "index": out_index,
                         "image_id": self._get_image_id(out_index),
                         "stage": "final",
