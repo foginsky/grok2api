@@ -1,6 +1,7 @@
 """Token 管理服务"""
 
 import asyncio
+import hashlib
 import time
 import importlib
 from datetime import datetime
@@ -63,9 +64,10 @@ def _token_tag(token: str) -> str:
     raw = token[4:] if token.startswith("sso=") else token
     if not raw:
         return "empty"
-    if len(raw) <= 14:
-        return raw
-    return f"{raw[:6]}...{raw[-6:]}"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    if len(raw) <= 10:
+        return f"{raw}#{digest}"
+    return f"{raw[:4]}...{raw[-4:]}#{digest}"
 
 
 def _raw_token(token: str) -> str:

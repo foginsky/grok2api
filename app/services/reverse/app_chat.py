@@ -240,10 +240,8 @@ class AppChatReverse:
                     content_type = str(response.headers.get("content-type", ""))
 
                     logger.error(
-                        "AppChatReverse: Chat failed, %s, content_type=%s, body=%s",
-                        response.status_code,
-                        content_type,
-                        content[:500],
+                        f"AppChatReverse: Chat failed, {response.status_code}, "
+                        f"content_type={content_type}, body={content[:500]}",
                         extra={"error_type": "UpstreamException"},
                     )
                     raise UpstreamException(
