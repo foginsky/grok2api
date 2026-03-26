@@ -102,22 +102,6 @@ class ImageGenerationService:
                     yielded = False
                     try:
                         try:
-                            result = await self._stream_app_chat(
-                                token_mgr=token_mgr,
-                                token=current_token,
-                                model_info=model_info,
-                                prompt=prompt,
-                                n=n,
-                                response_format=response_format,
-                                enable_nsfw=enable_nsfw,
-                            )
-                        except UpstreamException as app_chat_error:
-                            if rate_limited(app_chat_error):
-                                raise
-                            logger.warning(
-                                "App-chat image stream failed, falling back to ws_imagine: %s",
-                                app_chat_error,
-                            )
                             result = await self._stream_ws(
                                 token_mgr=token_mgr,
                                 token=current_token,
@@ -127,6 +111,22 @@ class ImageGenerationService:
                                 response_format=response_format,
                                 size=size,
                                 aspect_ratio=aspect_ratio,
+                                enable_nsfw=enable_nsfw,
+                            )
+                        except UpstreamException as ws_error:
+                            if rate_limited(ws_error):
+                                raise
+                            logger.warning(
+                                "WS image stream failed, falling back to app-chat: %s",
+                                ws_error,
+                            )
+                            result = await self._stream_app_chat(
+                                token_mgr=token_mgr,
+                                token=current_token,
+                                model_info=model_info,
+                                prompt=prompt,
+                                n=n,
+                                response_format=response_format,
                                 enable_nsfw=enable_nsfw,
                             )
                         async for chunk in result.data:
@@ -175,22 +175,6 @@ class ImageGenerationService:
             tried_tokens.add(current_token)
             try:
                 try:
-                    return await self._collect_app_chat(
-                        token_mgr=token_mgr,
-                        token=current_token,
-                        model_info=model_info,
-                        prompt=prompt,
-                        n=n,
-                        response_format=response_format,
-                        enable_nsfw=enable_nsfw,
-                    )
-                except UpstreamException as app_chat_error:
-                    if rate_limited(app_chat_error):
-                        raise
-                    logger.warning(
-                        "App-chat image collect failed, falling back to ws_imagine: %s",
-                        app_chat_error,
-                    )
                     return await self._collect_ws(
                         token_mgr=token_mgr,
                         token=current_token,
@@ -199,6 +183,22 @@ class ImageGenerationService:
                         n=n,
                         response_format=response_format,
                         aspect_ratio=aspect_ratio,
+                        enable_nsfw=enable_nsfw,
+                    )
+                except UpstreamException as ws_error:
+                    if rate_limited(ws_error):
+                        raise
+                    logger.warning(
+                        "WS image collect failed, falling back to app-chat: %s",
+                        ws_error,
+                    )
+                    return await self._collect_app_chat(
+                        token_mgr=token_mgr,
+                        token=current_token,
+                        model_info=model_info,
+                        prompt=prompt,
+                        n=n,
+                        response_format=response_format,
                         enable_nsfw=enable_nsfw,
                     )
             except UpstreamException as e:
