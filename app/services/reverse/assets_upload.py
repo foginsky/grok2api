@@ -20,6 +20,21 @@ from app.services.reverse.utils.retry import retry_on_status
 UPLOAD_API = "https://grok.com/rest/app-chat/upload-file"
 
 
+def _extract_error_hint(status: int, body: str) -> str:
+    text = str(body or "")
+    lower = text.lower()
+    if "content is moderated" in lower or '"code":3' in lower or "'code': 3" in lower:
+        return "content_moderated"
+    if status == 403 and (
+        "cloudflare" in lower
+        or "just a moment" in lower
+        or "attention required" in lower
+        or "cf-challenge" in lower
+    ):
+        return "cloudflare_challenge"
+    return ""
+
+
 class AssetsUploadReverse:
     """/rest/app-chat/upload-file reverse interface."""
 
@@ -34,7 +49,11 @@ class AssetsUploadReverse:
 
     @staticmethod
     async def _urllib_post(
-        url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int, proxy_url: str
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: int,
+        proxy_url: str,
     ) -> "AssetsUploadReverse._SimpleResponse":
         """使用标准库 urllib 兜底上传，绕过 curl_cffi 异常。"""
         body = json.dumps(payload).encode("utf-8")
@@ -78,7 +97,8 @@ class AssetsUploadReverse:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     status = int(getattr(resp, "status", 200) or 200)
                     raw_headers = {
-                        str(k).lower(): str(v) for k, v in dict(resp.headers.items()).items()
+                        str(k).lower(): str(v)
+                        for k, v in dict(resp.headers.items()).items()
                     }
                     text = resp.read().decode("utf-8", errors="replace")
                     return status, raw_headers, text
@@ -93,7 +113,13 @@ class AssetsUploadReverse:
         )
 
     @staticmethod
-    async def request(session: AsyncSession, token: str, fileName: str, fileMimeType: str, content: str) -> Any:
+    async def request(
+        session: AsyncSession,
+        token: str,
+        fileName: str,
+        fileMimeType: str,
+        content: str,
+    ) -> Any:
         """Upload asset to Grok.
 
         Args:
@@ -178,19 +204,30 @@ class AssetsUploadReverse:
                     if response.status_code != 200:
                         body_preview = ""
                         try:
-                            body_preview = (response.text or "").strip().replace("\n", " ")
+                            body_preview = (
+                                (response.text or "").strip().replace("\n", " ")
+                            )
                         except Exception:
                             body_preview = ""
                         if len(body_preview) > 300:
-                            body_preview = f"{body_preview[:300]}...(len={len(body_preview)})"
+                            body_preview = (
+                                f"{body_preview[:300]}...(len={len(body_preview)})"
+                            )
                         logger.error(
                             "AssetsUploadReverse: Upload failed, "
                             f"status={response.status_code}, body={body_preview or '-'}",
                             extra={"error_type": "UpstreamException"},
                         )
+                        error_hint = _extract_error_hint(
+                            response.status_code, body_preview
+                        )
                         raise UpstreamException(
                             message=f"AssetsUploadReverse: Upload failed, {response.status_code}",
-                            details={"status": response.status_code, "body": body_preview},
+                            details={
+                                "status": response.status_code,
+                                "body": body_preview,
+                                "error_hint": error_hint,
+                            },
                         )
                     return response
                 except UpstreamException:
@@ -219,14 +256,24 @@ class AssetsUploadReverse:
                                 return response
                             body_preview = ""
                             try:
-                                body_preview = (response.text or "").strip().replace("\n", " ")
+                                body_preview = (
+                                    (response.text or "").strip().replace("\n", " ")
+                                )
                             except Exception:
                                 body_preview = ""
                             if len(body_preview) > 300:
-                                body_preview = f"{body_preview[:300]}...(len={len(body_preview)})"
+                                body_preview = (
+                                    f"{body_preview[:300]}...(len={len(body_preview)})"
+                                )
                             raise UpstreamException(
                                 message=f"AssetsUpload forced direct failed: {response.status_code}",
-                                details={"status": response.status_code, "body": body_preview},
+                                details={
+                                    "status": response.status_code,
+                                    "body": body_preview,
+                                    "error_hint": _extract_error_hint(
+                                        response.status_code, body_preview
+                                    ),
+                                },
                             )
                         except Exception as forced_direct_err:
                             if isinstance(forced_direct_err, UpstreamException):
@@ -249,12 +296,22 @@ class AssetsUploadReverse:
                                     "AssetsUpload recovered by forced urllib fallback after transient error"
                                 )
                                 return response
-                            body_preview = (response.text or "").strip().replace("\n", " ")
+                            body_preview = (
+                                (response.text or "").strip().replace("\n", " ")
+                            )
                             if len(body_preview) > 300:
-                                body_preview = f"{body_preview[:300]}...(len={len(body_preview)})"
+                                body_preview = (
+                                    f"{body_preview[:300]}...(len={len(body_preview)})"
+                                )
                             raise UpstreamException(
                                 message=f"AssetsUpload forced urllib failed: {response.status_code}",
-                                details={"status": response.status_code, "body": body_preview},
+                                details={
+                                    "status": response.status_code,
+                                    "body": body_preview,
+                                    "error_hint": _extract_error_hint(
+                                        response.status_code, body_preview
+                                    ),
+                                },
                             )
                         except Exception as forced_urllib_err:
                             if isinstance(forced_urllib_err, UpstreamException):
@@ -284,7 +341,9 @@ class AssetsUploadReverse:
                     status = getattr(e, "status_code", None)
                 if status == 401:
                     try:
-                        await TokenService.record_fail(token, status, "assets_upload_auth_failed")
+                        await TokenService.record_fail(
+                            token, status, "assets_upload_auth_failed"
+                        )
                     except Exception:
                         pass
                 raise

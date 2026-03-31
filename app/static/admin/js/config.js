@@ -516,6 +516,44 @@ function buildFieldCard(section, key, val) {
   return fieldCard;
 }
 
+function ensureCfRefreshButton() {
+  const saveBtn = byId('save-btn');
+  if (!saveBtn || byId('cf-refresh-btn')) return;
+
+  const btn = document.createElement('button');
+  btn.id = 'cf-refresh-btn';
+  btn.type = 'button';
+  btn.className = 'geist-btn ml-2';
+  btn.textContent = '刷新 CF';
+  btn.addEventListener('click', async () => {
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '刷新中...';
+    try {
+      const res = await fetch('/v1/admin/config/cf-refresh', {
+        method: 'POST',
+        headers: buildAuthHeaders(apiKey),
+      });
+      if (!res.ok) {
+        let detail = '刷新失败';
+        try {
+          const data = await res.json();
+          detail = data?.detail || detail;
+        } catch (_) {}
+        throw new Error(detail);
+      }
+      showToast('CF 刷新完成', 'success');
+    } catch (e) {
+      showToast(`CF 刷新失败: ${e.message || e}`, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
+  saveBtn.insertAdjacentElement('afterend', btn);
+}
+
 async function saveConfig() {
   const btn = byId('save-btn');
   const originalText = btn.innerText;
@@ -609,4 +647,7 @@ async function copyToClipboard(text, btn) {
   }
 }
 
-window.onload = init;
+window.onload = async () => {
+  await init();
+  ensureCfRefreshButton();
+};

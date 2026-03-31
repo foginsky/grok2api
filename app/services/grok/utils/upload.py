@@ -44,7 +44,9 @@ class UploadService:
             self._session = None
 
     @staticmethod
-    def _normalize_image_to_jpeg(filename: str, b64: str, mime: str) -> Tuple[str, str, str]:
+    def _normalize_image_to_jpeg(
+        filename: str, b64: str, mime: str
+    ) -> Tuple[str, str, str]:
         """所有图片统一净化并重编码为 JPEG，消除源图指纹差异。"""
         safe_mime = str(mime or "").lower().strip()
         if not safe_mime.startswith("image/"):
@@ -185,7 +187,9 @@ class UploadService:
             parts.append(base64.b64encode(remain).decode())
         return "".join(parts)
 
-    async def _read_local_file(self, local_type: str, name: str) -> Tuple[str, str, str]:
+    async def _read_local_file(
+        self, local_type: str, name: str
+    ) -> Tuple[str, str, str]:
         base_dir = DATA_DIR / "tmp"
         if local_type == "video":
             local_dir = base_dir / "video"
@@ -203,7 +207,9 @@ class UploadService:
                 mime = "image/jpeg"
 
         local_path = local_dir / name
-        lock_name = f"ul_local_{hashlib.sha1(str(local_path).encode()).hexdigest()[:16]}"
+        lock_name = (
+            f"ul_local_{hashlib.sha1(str(local_path).encode()).hexdigest()[:16]}"
+        )
         lock_timeout = max(1, int(get_config("asset.upload_timeout")))
         async with _file_lock(lock_name, timeout=lock_timeout):
             if not local_path.exists():
@@ -262,9 +268,9 @@ class UploadService:
                     )
 
                 filename = url.split("/")[-1].split("?")[0] or "download"
-                content_type = response.headers.get(
-                    "content-type", ""
-                ).split(";")[0].strip()
+                content_type = (
+                    response.headers.get("content-type", "").split(";")[0].strip()
+                )
                 if not content_type:
                     content_type = self._infer_mime(filename)
                 if hasattr(response, "aiter_content"):
@@ -365,8 +371,24 @@ class UploadService:
                 status = None
                 if e.details and "status" in e.details:
                     status = e.details.get("status")
+                error_hint = ""
+                if e.details and "error_hint" in e.details:
+                    error_hint = str(e.details.get("error_hint") or "").strip()
                 if mime != "image/jpeg" or status not in (400, 403):
                     raise
+
+                if error_hint == "content_moderated":
+                    raise AppException(
+                        message="图片上传被审核拦截，请更换图片后重试",
+                        error_type=ErrorType.INVALID_REQUEST.value,
+                        code="content_moderated",
+                        status_code=400,
+                    )
+
+                if error_hint == "cloudflare_challenge":
+                    logger.warning(
+                        "Upload blocked by Cloudflare challenge during asset upload"
+                    )
 
                 # 部分图片会被上游以 400/403 拒绝，切换 JPEG profile 再试一次。
                 fallback_profiles = [
