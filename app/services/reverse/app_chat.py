@@ -147,6 +147,8 @@ class AppChatReverse:
         message: str,
         model: str,
         requested_model: str | None = None,
+        disable_retry: bool = False,
+        record_auth_failures: bool = True,
         mode: Optional[str] = None,
         file_attachments: Optional[List[str]] = None,
         tool_overrides: Optional[Dict[str, Any]] = None,
@@ -262,11 +264,14 @@ class AppChatReverse:
                     return status
                 return None
 
-            response = await retry_on_status(
-                _do_request,
-                extract_status=extract_status,
-                retry_status_codes=[502, 599],
-            )
+            if disable_retry:
+                response = await _do_request()
+            else:
+                response = await retry_on_status(
+                    _do_request,
+                    extract_status=extract_status,
+                    retry_status_codes=[502, 599],
+                )
 
             # Stream response
             async def stream_response():
@@ -299,7 +304,7 @@ class AppChatReverse:
                     status = e.details["status"]
                 else:
                     status = getattr(e, "status_code", None)
-                if status in {401, 403}:
+                if record_auth_failures and status in {401, 403}:
                     try:
                         await TokenService.record_fail(
                             token, status, "app_chat_auth_failed"
