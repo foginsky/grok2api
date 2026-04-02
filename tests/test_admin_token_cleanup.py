@@ -5,13 +5,14 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MANAGER_PATH = PROJECT_ROOT / "app/services/token/manager.py"
 MODELS_PATH = PROJECT_ROOT / "app/services/token/models.py"
 POOL_PATH = PROJECT_ROOT / "app/services/token/pool.py"
+CHAT_SERVICE_PATH = PROJECT_ROOT / "app/services/grok/services/chat.py"
 ADMIN_TOKEN_PATH = PROJECT_ROOT / "app/api/v1/admin_api/token.py"
 BATCH_PATH = PROJECT_ROOT / "app/core/batch.py"
 AUTH_PATH = PROJECT_ROOT / "app/core/auth.py"
@@ -119,6 +120,113 @@ def _install_dependency_stubs() -> None:
         setattr(nsfw_module, "NSFWService", NSFWService)
         sys.modules["app.services.grok.batch_services.nsfw"] = nsfw_module
 
+    if "app.services.reverse.utils.headers" not in sys.modules:
+        headers_module = types.ModuleType("app.services.reverse.utils.headers")
+        setattr(headers_module, "build_headers", lambda **kwargs: {"x-test": "1"})
+        sys.modules["app.services.reverse.utils.headers"] = headers_module
+
+    if "app.services.reverse.utils.retry" not in sys.modules:
+        retry_module = types.ModuleType("app.services.reverse.utils.retry")
+
+        async def _retry_on_status(func, **_kwargs):
+            return await func()
+
+        setattr(retry_module, "retry_on_status", _retry_on_status)
+        sys.modules["app.services.reverse.utils.retry"] = retry_module
+
+    if "app.services.reverse.utils.session" not in sys.modules:
+        session_module = types.ModuleType("app.services.reverse.utils.session")
+
+        class ResettableSession:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def close(self):
+                return None
+
+        setattr(session_module, "ResettableSession", ResettableSession)
+        sys.modules["app.services.reverse.utils.session"] = session_module
+
+    if "app.services.grok.services.model" not in sys.modules:
+        model_module = types.ModuleType("app.services.grok.services.model")
+
+        class ModelService:
+            @staticmethod
+            def get(_model):
+                return None
+
+            @staticmethod
+            def to_grok(model_id):
+                return model_id, None
+
+        setattr(model_module, "ModelService", ModelService)
+        sys.modules["app.services.grok.services.model"] = model_module
+
+    if "app.services.grok.utils.upload" not in sys.modules:
+        upload_module = types.ModuleType("app.services.grok.utils.upload")
+
+        class UploadService:
+            async def upload_file(self, *_args, **_kwargs):
+                return "file-id", {}
+
+            async def close(self):
+                return None
+
+        setattr(upload_module, "UploadService", UploadService)
+        sys.modules["app.services.grok.utils.upload"] = upload_module
+
+    if "app.services.grok.utils.process" not in sys.modules:
+        process_module = types.ModuleType("app.services.grok.utils.process")
+
+        class BaseProcessor:
+            def __init__(self, model: str, token: str = ""):
+                self.model = model
+                self.token = token
+                self.created = 0
+
+            async def close(self):
+                return None
+
+            def _get_dl(self):
+                return types.SimpleNamespace(
+                    render_image=AsyncMock(return_value="![image](https://example.com)")
+                )
+
+        setattr(process_module, "BaseProcessor", BaseProcessor)
+        sys.modules["app.services.grok.utils.process"] = process_module
+
+    if "app.services.grok.utils.retry" not in sys.modules:
+        grok_retry_module = types.ModuleType("app.services.grok.utils.retry")
+        setattr(grok_retry_module, "pick_token", lambda *_args, **_kwargs: None)
+        setattr(grok_retry_module, "rate_limited", lambda *_args, **_kwargs: False)
+        sys.modules["app.services.grok.utils.retry"] = grok_retry_module
+
+    if "app.services.grok.utils.stream" not in sys.modules:
+        stream_module = types.ModuleType("app.services.grok.utils.stream")
+        setattr(
+            stream_module, "wrap_stream_with_usage", lambda stream, *_a, **_k: stream
+        )
+        sys.modules["app.services.grok.utils.stream"] = stream_module
+
+    if "app.services.grok.utils.tool_call" not in sys.modules:
+        tool_call_module = types.ModuleType("app.services.grok.utils.tool_call")
+        setattr(tool_call_module, "build_tool_prompt", lambda *_args, **_kwargs: "")
+        setattr(tool_call_module, "parse_tool_calls", lambda *_args, **_kwargs: [])
+        setattr(
+            tool_call_module, "parse_tool_call_block", lambda *_args, **_kwargs: None
+        )
+        setattr(tool_call_module, "format_tool_history", lambda messages: messages)
+        sys.modules["app.services.grok.utils.tool_call"] = tool_call_module
+
+    token_pkg = sys.modules.get("app.services.token")
+    if token_pkg is not None:
+        setattr(token_pkg, "get_token_manager", AsyncMock(return_value=None))
+
+        class EffortType:
+            LOW = "low"
+
+        setattr(token_pkg, "EffortType", EffortType)
+
     if "orjson" not in sys.modules:
         orjson_module = types.ModuleType("orjson")
         setattr(orjson_module, "dumps", lambda value: json.dumps(value).encode("utf-8"))
@@ -154,6 +262,21 @@ def _load_test_modules():
         "app.services.grok.batch_services.nsfw",
         "app.services.grok.batch_services",
         "app.services.grok",
+        "app.services.grok.services.chat",
+        "app.services.grok.services.model",
+        "app.services.grok.services",
+        "app.services.grok.utils.upload",
+        "app.services.grok.utils.process",
+        "app.services.grok.utils.retry",
+        "app.services.grok.utils.stream",
+        "app.services.grok.utils.tool_call",
+        "app.services.grok.utils",
+        "app.services.reverse.app_chat",
+        "app.services.reverse.utils.retry",
+        "app.services.reverse.utils.session",
+        "app.services.reverse.utils.headers",
+        "app.services.reverse.utils",
+        "app.services.reverse",
         "app.services.token",
         "app.services",
         "app.core.batch",
@@ -173,6 +296,14 @@ def _load_test_modules():
     _ensure_package("app.services", PROJECT_ROOT / "app/services")
     _ensure_package("app.services.token", PROJECT_ROOT / "app/services/token")
     _ensure_package("app.services.grok", PROJECT_ROOT / "app/services/grok")
+    _ensure_package(
+        "app.services.grok.services", PROJECT_ROOT / "app/services/grok/services"
+    )
+    _ensure_package("app.services.grok.utils", PROJECT_ROOT / "app/services/grok/utils")
+    _ensure_package("app.services.reverse", PROJECT_ROOT / "app/services/reverse")
+    _ensure_package(
+        "app.services.reverse.utils", PROJECT_ROOT / "app/services/reverse/utils"
+    )
     _ensure_package(
         "app.services.grok.batch_services",
         PROJECT_ROOT / "app/services/grok/batch_services",
@@ -217,10 +348,11 @@ class _FakeCleanupProbeService:
 
 
 class _FakeProbeResponse:
-    def __init__(self, status_code=200, lines=None, body=""):
+    def __init__(self, status_code=200, lines=None, body="", headers=None):
         self.status_code = status_code
         self._lines = list(lines or [])
         self._body = body
+        self.headers = headers or {}
         self.closed = False
 
     async def text(self):
@@ -252,30 +384,26 @@ class CleanupProbeServiceStreamTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        response = _FakeProbeResponse(200, [f"data: {error_line}"])
+        request_calls = []
 
-        class _FakeSession:
-            async def __aenter__(self):
-                return self
+        async def _fake_stream():
+            try:
+                request_calls.append(("stream_yielded", None))
+                yield f"data: {error_line}"
+            finally:
+                request_calls.append(("stream_closed", None))
 
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-            async def post(self, *_args, **_kwargs):
-                return response
+        class _FakeChatService:
+            async def chat(self, **kwargs):
+                request_calls.append(("chat", kwargs))
+                return _fake_stream()
 
         with (
             patch.object(
                 cleanup_probe_module,
-                "_get_session_cls",
-                lambda: (lambda **_kwargs: _FakeSession()),
-            ),
-            patch.object(
-                cleanup_probe_module,
-                "_get_headers_builder",
-                lambda: (
-                    lambda cookie_token, **_kwargs: {"Cookie": f"sso={cookie_token}"}
-                ),
+                "_get_chat_service_cls",
+                lambda: _FakeChatService,
+                create=True,
             ),
             patch.object(
                 cleanup_probe_module,
@@ -290,13 +418,109 @@ class CleanupProbeServiceStreamTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 cleanup_probe_module,
                 "_get_app_chat_helpers",
-                lambda: (
-                    types.SimpleNamespace(
-                        build_payload=lambda **_kwargs: {"message": "hi"}
-                    ),
-                    "https://grok.com/rest/app-chat/conversations/new",
-                    lambda exc: False,
+                side_effect=AssertionError(
+                    "cleanup probe should use GrokChatService.chat"
                 ),
+                create=True,
+            ),
+            patch.object(
+                cleanup_probe_module,
+                "logger",
+                types.SimpleNamespace(
+                    info=lambda *a, **k: None,
+                    error=lambda *a, **k: None,
+                    warning=lambda *a, **k: None,
+                ),
+            ),
+        ):
+            with self.assertRaises(cleanup_probe_module.UpstreamException) as ctx:
+                await cleanup_probe_module.CleanupProbeService().probe(
+                    "token-1", "grok-4.1-fast", disable_retry=True
+                )
+
+        self.assertEqual(ctx.exception.details["status"], 404)
+        self.assertEqual(request_calls[0][0], "chat")
+        self.assertEqual(
+            request_calls[0][1],
+            {
+                "token": "token-1",
+                "message": "hi",
+                "model": "grok-4-1-thinking-1129",
+                "requested_model": "grok-4.1-fast",
+                "mode": "MODEL_MODE_FAST",
+                "image_generation_count": 1,
+                "disable_retry": True,
+                "record_auth_failures": False,
+            },
+        )
+        self.assertIn(("stream_yielded", None), request_calls)
+        self.assertIn(("stream_closed", None), request_calls)
+
+    async def test_probe_uses_real_request_path_without_retry_or_fail_tracking(self):
+        cleanup_probe_module = _load_module(
+            "app.services.grok.batch_services.cleanup_probe",
+            PROJECT_ROOT / "app/services/grok/batch_services/cleanup_probe.py",
+        )
+        chat_module = _load_module("app.services.grok.services.chat", CHAT_SERVICE_PATH)
+        app_chat_module = sys.modules["app.services.reverse.app_chat"]
+
+        response = _FakeProbeResponse(
+            403,
+            body="forbidden by upstream",
+            headers={"cf-ray": "ray-cleanup-403"},
+        )
+        record_fail = AsyncMock(return_value=True)
+
+        class _RecordingSession:
+            def __init__(self, *_args, **_kwargs):
+                self.calls = []
+                self.closed = False
+
+            async def post(self, *args, **kwargs):
+                self.calls.append({"args": args, "kwargs": kwargs})
+                return response
+
+            async def close(self):
+                self.closed = True
+
+        values = {
+            "proxy.base_proxy_url": "",
+            "chat.timeout": 30,
+            "chat.concurrent": 1,
+            "video.timeout": 30,
+            "image.timeout": 30,
+            "chat.connect_timeout": 5,
+            "proxy.browser": "chrome-test",
+            "app.disable_memory": True,
+            "app.temporary": True,
+        }
+
+        async def _fail_if_retry_used(*_args, **_kwargs):
+            raise AssertionError("cleanup probe should not invoke retry_on_status")
+
+        fake_session = _RecordingSession()
+
+        with (
+            patch.object(
+                cleanup_probe_module,
+                "_get_chat_service_cls",
+                lambda: chat_module.GrokChatService,
+                create=True,
+            ),
+            patch.object(
+                cleanup_probe_module,
+                "_get_model_service",
+                lambda: types.SimpleNamespace(
+                    to_grok=lambda _model_id: ("grok-4", "MODEL_MODE_FAST")
+                ),
+            ),
+            patch.object(
+                cleanup_probe_module,
+                "_get_app_chat_helpers",
+                side_effect=AssertionError(
+                    "cleanup probe should route through GrokChatService.chat"
+                ),
+                create=True,
             ),
             patch.object(
                 cleanup_probe_module,
@@ -308,16 +532,36 @@ class CleanupProbeServiceStreamTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             patch.object(
-                cleanup_probe_module, "_get_requests_error_cls", lambda: Exception
+                chat_module,
+                "ResettableSession",
+                lambda *_args, **_kwargs: fake_session,
             ),
+            patch.object(
+                app_chat_module,
+                "get_config",
+                side_effect=lambda key, default=None: values.get(key, default),
+            ),
+            patch.object(
+                chat_module,
+                "get_config",
+                side_effect=lambda key, default=None: values.get(key, default),
+            ),
+            patch.object(app_chat_module.TokenService, "record_fail", new=record_fail),
+            patch.object(app_chat_module, "retry_on_status", new=_fail_if_retry_used),
         ):
             with self.assertRaises(cleanup_probe_module.UpstreamException) as ctx:
                 await cleanup_probe_module.CleanupProbeService().probe(
-                    "token-1", "grok-4.1-fast", disable_retry=True
+                    "cleanup-token", "grok-4.1-fast", disable_retry=True
                 )
 
-        self.assertEqual(ctx.exception.details["status"], 404)
-        self.assertTrue(response.closed)
+        self.assertEqual(ctx.exception.details["status"], 403)
+        record_fail.assert_not_awaited()
+        self.assertEqual(len(fake_session.calls), 1)
+        payload = json.loads(fake_session.calls[0]["kwargs"]["data"].decode("utf-8"))
+        self.assertEqual(payload["modelName"], "grok-4")
+        self.assertEqual(payload["modelMode"], "MODEL_MODE_FAST")
+        self.assertEqual(payload["message"], "hi")
+        self.assertTrue(fake_session.closed)
 
 
 def _build_manager(manager_module):

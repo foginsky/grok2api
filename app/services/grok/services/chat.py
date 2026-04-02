@@ -260,6 +260,8 @@ class GrokChatService:
         model_config_override: Dict[str, Any] = None,
         image_generation_count: int | None = None,
         request_overrides: Dict[str, Any] | None = None,
+        disable_retry: bool = False,
+        record_auth_failures: bool = True,
     ):
         """发送聊天请求"""
         if stream is None:
@@ -284,6 +286,8 @@ class GrokChatService:
                         message=message,
                         model=model,
                         requested_model=requested_model,
+                        disable_retry=disable_retry,
+                        record_auth_failures=record_auth_failures,
                         mode=mode,
                         file_attachments=file_attachments,
                         tool_overrides=tool_overrides,
