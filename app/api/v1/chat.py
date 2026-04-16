@@ -5,7 +5,7 @@ Chat Completions API 路由
 import asyncio
 import inspect
 import re
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, AsyncGenerator, AsyncIterable, Dict, List, Optional, Union
 import base64
 import binascii
 import time
@@ -819,6 +819,62 @@ def _build_streaming_response(
     )
 
 
+async def _safe_sse_stream(stream: AsyncIterable[str]) -> AsyncGenerator[str, None]:
+    """Return SSE error payloads instead of transport-level 5xx breaks."""
+    try:
+        async for chunk in stream:
+            yield chunk
+    except AppException as e:
+        payload = {
+            "error": {
+                "message": e.message,
+                "type": e.error_type,
+                "code": e.code,
+            }
+        }
+        yield f"event: error\ndata: {orjson.dumps(payload).decode()}\n\n"
+        yield "data: [DONE]\n\n"
+    except Exception as e:
+        payload = {
+            "error": {
+                "message": str(e) or "stream_error",
+                "type": "server_error",
+                "code": "stream_error",
+            }
+        }
+        yield f"event: error\ndata: {orjson.dumps(payload).decode()}\n\n"
+        yield "data: [DONE]\n\n"
+
+
+def _streaming_error_response(exc: Exception) -> StreamingResponse:
+    if isinstance(exc, AppException):
+        payload = {
+            "error": {
+                "message": exc.message,
+                "type": exc.error_type,
+                "code": exc.code,
+            }
+        }
+    else:
+        payload = {
+            "error": {
+                "message": str(exc) or "stream_error",
+                "type": "server_error",
+                "code": "stream_error",
+            }
+        }
+
+    async def _one_shot_error() -> AsyncGenerator[str, None]:
+        yield f"event: error\ndata: {orjson.dumps(payload).decode()}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        _one_shot_error(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
 def _chat_completion_id() -> str:
     return f"chatcmpl-{uuid.uuid4().hex}"
 
@@ -1146,28 +1202,35 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                 request.model, _video_error_message(e)
             )
     else:
-        result = await ChatService.completions(
-            model=request.model,
-            messages=[msg.model_dump() for msg in request.messages],
-            stream=request.stream,
-            reasoning_effort=request.reasoning_effort,
-            temperature=float(
-                request.temperature if request.temperature is not None else 0.8
-            ),
-            top_p=float(request.top_p if request.top_p is not None else 0.95),
-            tools=request.tools or [],
-            tool_choice=request.tool_choice,
-            parallel_tool_calls=(
-                True
-                if request.parallel_tool_calls is None
-                else request.parallel_tool_calls
-            ),
-        )
+        try:
+            result = await ChatService.completions(
+                model=request.model,
+                messages=[msg.model_dump() for msg in request.messages],
+                stream=request.stream,
+                reasoning_effort=request.reasoning_effort,
+                temperature=float(
+                    request.temperature if request.temperature is not None else 0.8
+                ),
+                top_p=float(request.top_p if request.top_p is not None else 0.95),
+                tools=request.tools or [],
+                tool_choice=request.tool_choice,
+                parallel_tool_calls=(
+                    True
+                    if request.parallel_tool_calls is None
+                    else request.parallel_tool_calls
+                ),
+            )
+        except Exception as e:
+            if request.stream is not False:
+                return _streaming_error_response(e)
+            raise
 
     if isinstance(result, dict):
         return JSONResponse(content=result)
     else:
-        return _build_streaming_response(result, raw_request, request.model)
+        return _build_streaming_response(
+            _safe_sse_stream(result), raw_request, request.model
+        )
 
 
 __all__ = ["router"]

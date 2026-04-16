@@ -206,11 +206,14 @@ class AppChatReverse:
             )
 
             # Curl Config
-            base_timeout = max(
-                float(get_config("chat.timeout") or 60.0),
-                float(get_config("video.timeout") or 60.0),
-                float(get_config("image.timeout") or 60.0),
-            )
+            base_timeout = float(get_config("chat.timeout") or 0)
+            if base_timeout <= 0:
+                base_timeout = max(
+                    float(get_config("video.timeout") or 0),
+                    float(get_config("image.timeout") or 0),
+                )
+            if base_timeout <= 0:
+                base_timeout = 60.0
             connect_timeout = float(
                 get_config("chat.connect_timeout") or min(max(base_timeout, 1.0), 12.0)
             )
