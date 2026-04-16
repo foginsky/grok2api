@@ -41,10 +41,12 @@ class AssetsDownloadReverse:
         async def aiter_content(self, chunk_size: int = 64 * 1024):
             data = self.content or b""
             for i in range(0, len(data), chunk_size):
-                yield data[i:i + chunk_size]
+                yield data[i : i + chunk_size]
 
     @staticmethod
-    async def _urllib_get(url: str, headers: dict[str, str], timeout: int) -> "AssetsDownloadReverse._SimpleResponse":
+    async def _urllib_get(
+        url: str, headers: dict[str, str], timeout: int
+    ) -> "AssetsDownloadReverse._SimpleResponse":
         """使用标准库 urllib 兜底下载，绕过 curl TLS 实现。"""
         req = urllib.request.Request(url=url, headers=headers, method="GET")
 
@@ -89,7 +91,9 @@ class AssetsDownloadReverse:
             proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
             # Guess content type by extension for Accept/Sec-Fetch-Dest
-            content_type = _CONTENT_TYPES.get(Path(urllib.parse.urlparse(file_path).path).suffix.lower())
+            content_type = _CONTENT_TYPES.get(
+                Path(urllib.parse.urlparse(file_path).path).suffix.lower()
+            )
 
             # Build headers
             headers = build_headers(
@@ -179,7 +183,9 @@ class AssetsDownloadReverse:
 
                 if status == 401:
                     try:
-                        await TokenService.record_fail(token, status, "assets_download_auth_failed")
+                        await TokenService.record_fail(
+                            token, status, "assets_download_auth_failed"
+                        )
                     except Exception:
                         pass
                 raise

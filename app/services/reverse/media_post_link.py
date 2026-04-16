@@ -41,11 +41,7 @@ class MediaPostLinkReverse:
             )
 
             # Build payload
-            payload = {
-                "postId": post_id,
-                "source": "post-page",
-                "platform": "web"
-            }
+            payload = {"postId": post_id, "source": "post-page", "platform": "web"}
 
             # Curl Config
             timeout = get_config("video.timeout")
@@ -54,7 +50,9 @@ class MediaPostLinkReverse:
 
             async def _do_request():
                 nonlocal active_proxy_key
-                active_proxy_key, proxy_url = get_current_proxy_from("proxy.base_proxy_url")
+                active_proxy_key, proxy_url = get_current_proxy_from(
+                    "proxy.base_proxy_url"
+                )
                 proxies = build_http_proxies(proxy_url)
                 response = await session.post(
                     MEDIA_POST_LINK_API,
@@ -82,7 +80,9 @@ class MediaPostLinkReverse:
 
                 return response
 
-            async def _on_retry(attempt: int, status_code: int, error: Exception, delay: float):
+            async def _on_retry(
+                attempt: int, status_code: int, error: Exception, delay: float
+            ):
                 if active_proxy_key and should_rotate_proxy(status_code):
                     rotate_proxy(active_proxy_key)
 
@@ -98,7 +98,9 @@ class MediaPostLinkReverse:
                     status = getattr(e, "status_code", None)
                 if status == 401:
                     try:
-                        await TokenService.record_fail(token, status, "media_post_link_auth_failed")
+                        await TokenService.record_fail(
+                            token, status, "media_post_link_auth_failed"
+                        )
                     except Exception:
                         pass
                 raise
