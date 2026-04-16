@@ -823,6 +823,7 @@ class ImageWSCollectProcessor(ImageWSBaseProcessor):
 
     async def process(self, response: AsyncIterable[dict]) -> List[str]:
         images: Dict[str, Dict] = {}
+        saw_any_image = False
 
         async for item in response:
             if item.get("type") == "error":
@@ -830,10 +831,19 @@ class ImageWSCollectProcessor(ImageWSBaseProcessor):
                 raise UpstreamException(message, details=item)
             if item.get("type") != "image":
                 continue
+            saw_any_image = True
             image_id = item.get("image_id")
             if not image_id:
                 continue
+            if not item.get("is_final"):
+                continue
             images[image_id] = self._pick_best(images.get(image_id), item)
+
+        if saw_any_image and not images:
+            raise UpstreamException(
+                "No final image received from upstream",
+                details={"error_code": "blocked_no_final_image"},
+            )
 
         selected = sorted(
             images.values(),
